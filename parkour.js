@@ -1,388 +1,673 @@
 
-(() => {
-  // THUNDERCLOUD: RETRO SKY RUNNER
-  const old = document.querySelector("#thundercloud-game");
-  if (old) old.remove();
+import { createClient } from
+  "https://esm.sh/@supabase/supabase-js@2";
 
-  const game = document.createElement("div");
-  game.id = "thundercloud-game";
-  game.style.cssText = `
-    max-width:900px;margin:16px auto;background:#10152e;color:white;
-    font:14px monospace;border:4px solid #465b9a;
-  `;
-  game.innerHTML = `
-    <div style="display:flex;justify-content:space-between;gap:8px;
-      flex-wrap:wrap;padding:12px">
-      <b>☁ THUNDERCLOUD ADVENTURE</b>
-      <span id="tc-stats">COINS: 0 | HEARTS: ♥ ♥ ♥</span>
-    </div>
-    <canvas id="tc-canvas" width="480" height="270"
-      style="display:block;width:100%;height:auto;image-rendering:pixelated;
-      touch-action:none"></canvas>
-    <div style="display:flex;justify-content:space-around;gap:8px;
-      padding:12px;flex-wrap:wrap">
-      <button id="tc-left">◀ LEFT</button>
-      <button id="tc-right">RIGHT ▶</button>
-      <button id="tc-jump">⚡ JUMP</button>
-      <button id="tc-reset">↻ RESTART</button>
-    </div>
-    <p id="tc-message" style="text-align:center;padding:0 8px">
-      Collect coins and reach the lightning flag!
-    </p>
-  `;
-  document.body.appendChild(game);
+const supabase = createClient(
+  "https://qorfczqljrvxfouodhcp.supabase.co",
+  "sb_publishable_C4uGBFM5nmiGWOPanRqWvQ_SPbC0eRb"
+);
 
-  game.querySelectorAll("button").forEach(b => {
-    b.style.cssText = `background:#293c78;color:white;border:2px solid #91baff;
-      padding:10px 14px;font:bold 13px monospace;cursor:pointer`;
-  });
+const $ = id => document.getElementById(id);
+const canvas = $("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width;
+const H = canvas.height;
+const TILE = 40;
 
-  const canvas = game.querySelector("canvas");
-  const ctx = canvas.getContext("2d");
-  const W = 480, H = 270;
-  ctx.imageSmoothingEnabled = false;
+let user = null;
+let progress = { current_level: 1, unlocked_level: 1, total_jumps: 0 };
+let jumps = 0;
+let levelStarted = performance.now();
+let bestTimes = {};
+let currentLevel = 0;
+let mode = "play";
+let builderTool = "platform";
+let builder = { platforms: [], hazards: [], start: {x: 60, y: 430 }, goal: {x: 875, y: 390 } };
+let roomChannel = null;
+let roomName = "";
+let remotes = {};
+let lastBroadcast = 0;
+let toastTimer = null;
+let won = false;
+let previousTime = performance.now();
 
-  const stats = document.querySelector("#tc-stats");
-  const message = document.querySelector("#tc-message");
-  const keys = {};
-  let jumpQueued = false;
-  let camera = 0;
-  let coins = 0;
-  let hearts = 3;
-  let checkpoint = 0;
-  let won = false;
-  let tick = 0;
-  let invulnerable = 0;
+const defaultLevels = [
+  { name:"First Steps", start:{x:50,y:420}, goal:{x:865,y:390}, platforms:[{x:0,y:480,w:960,h:60},{x:200,y:410,w:120,h:18},{x:390,y:350,w:120,h:18},{x:590,y:420,w:120,h:18}], hazards:[] },
+  { name:"Little Gaps", start:{x:40,y:420}, goal:{x:870,y:400}, platforms:[{x:0,y:480,w:150,h:60},{x:210,y:430,w:100,h:18},{x:360,y:370,w:100,h:18},{x:520,y:430,w:100,h:18},{x:690,y:360,w:100,h:18},{x:830,y:460,w:130,h:80}], hazards:[] },
+  { name:"Spike Alley", start:{x:45,y:420}, goal:{x:870,y:400}, platforms:[{x:0,y:480,w:180,h:60},{x:260,y:420,w:130,h:18},{x:460,y:350,w:130,h:18},{x:670,y:420,w:130,h:18},{x:820,y:460,w:140,h:80}], hazards:[{x:180,y:465,w:80,h:15},{x:390,y:465,w:70,h:15},{x:590,y:465,w:80,h:15}] },
+  { name:"High Clouds", start:{x:40,y:430}, goal:{x:850,y:190}, platforms:[{x:0,y:480,w:130,h:60},{x:170,y:420,w:110,h:18},{x:320,y:350,w:110,h:18},{x:470,y:280,w:110,h:18},{x:620,y:220,w:110,h:18},{x:800,y:250,w:160,h:18}], hazards:[] },
+  { name:"Zigzag", start:{x:40,y:420}, goal:{x:860,y:400}, platforms:[{x:0,y:480,w:140,h:60},{x:190,y:420,w:100,h:18},{x:350,y:350,w:100,h:18},{x:500,y:420,w:100,h:18},{x:650,y:330,w:100,h:18},{x:810,y:460,w:150,h:80}], hazards:[{x:300,y:465,w:50,h:15},{x:600,y:465,w:50,h:15}] },
+  { name:"Sky Bridges", start:{x:30,y:420}, goal:{x:870,y:360}, platforms:[{x:0,y:480,w:120,h:60},{x:150,y:430,w:180,h:18},{x:370,y:370,w:180,h:18},{x:590,y:420,w:180,h:18},{x:810,y:420,w:150,h:60}], hazards:[] },
+  { name:"Danger Steps", start:{x:40,y:420}, goal:{x:860,y:380}, platforms:[{x:0,y:480,w:130,h:60},{x:190,y:410,w:100,h:18},{x:340,y:340,w:100,h:18},{x:490,y:410,w:100,h:18},{x:640,y:330,w:100,h:18},{x:810,y:440,w:150,h:100}], hazards:[{x:130,y:465,w:60,h:15},{x:290,y:465,w:50,h:15},{x:440,y:465,w:50,h:15},{x:590,y:465,w:50,h:15}] },
+  { name:"Cloud Towers", start:{x:30,y:430}, goal:{x:850,y:110}, platforms:[{x:0,y:480,w:120,h:60},{x:140,y:410,w:90,h:18},{x:270,y:330,w:90,h:18},{x:400,y:250,w:90,h:18},{x:530,y:180,w:90,h:18},{x:660,y:120,w:90,h:18},{x:800,y:160,w:160,h:18}], hazards:[] },
+  { name:"Tiny Targets", start:{x:30,y:420}, goal:{x:875,y:300}, platforms:[{x:0,y:480,w:100,h:60},{x:145,y:430,w:65,h:16},{x:255,y:370,w:65,h:16},{x:365,y:420,w:65,h:16},{x:475,y:330,w:65,h:16},{x:585,y:380,w:65,h:16},{x:695,y:270,w:65,h:16},{x:820,y:340,w:140,h:60}], hazards:[] },
+  { name:"Storm Run", start:{x:30,y:420}, goal:{x:860,y:380}, platforms:[{x:0,y:480,w:150,h:60},{x:210,y:400,w:110,h:18},{x:380,y:320,w:110,h:18},{x:550,y:400,w:110,h:18},{x:720,y:320,w:100,h:18},{x:830,y:440,w:130,h:100}], hazards:[{x:150,y:465,w:60,h:15},{x:320,y:465,w:60,h:15},{x:490,y:465,w:60,h:15},{x:660,y:465,w:60,h:15}] },
+  { name:"Moon Hop", start:{x:30,y:430}, goal:{x:850,y:180}, platforms:[{x:0,y:480,w:120,h:60},{x:170,y:420,w:90,h:18},{x:300,y:340,w:90,h:18},{x:430,y:260,w:90,h:18},{x:560,y:190,w:90,h:18},{x:690,y:130,w:90,h:18},{x:810,y:220,w:150,h:18}], hazards:[] },
+  { name:"Thunder Summit", start:{x:30,y:430}, goal:{x:850,y:90}, platforms:[{x:0,y:480,w:120,h:60},{x:150,y:420,w:90,h:18},{x:270,y:350,w:90,h:18},{x:390,y:280,w:90,h:18},{x:510,y:210,w:90,h:18},{x:630,y:150,w:90,h:18},{x:750,y:100,w:100,h:18},{x:850,y:130,w:110,h:18}], hazards:[{x:120,y:465,w:30,h:15},{x:240,y:465,w:30,h:15}] }
+];
 
-  const platforms = [
-    {x:0,y:228,w:190},
-    {x:235,y:205,w:65},
-    {x:325,y:177,w:65},
-    {x:420,y:205,w:70},
-    {x:525,y:165,w:75},
-    {x:635,y:190,w:65},
-    {x:730,y:140,w:80},
-    {x:845,y:170,w:65},
-    {x:950,y:205,w:80},
-    {x:1060,y:160,w:75},
-    {x:1170,y:185,w:80},
-    {x:1290,y:135,w:90},
-    {x:1420,y:185,w:100},
-    {x:1560,y:220,w:180}
-  ];
+let levels = defaultLevels.map(copyLevel);
+const player = {
+  x: 50, y: 420, w: 34, h: 30,
+  vx: 0, vy: 0, speed: 270, jump: 520,
+  onGround: false, color: "#a9c4ff"
+};
+const keys = new Set();
+const held = { left:false, right:false, jump:false };
 
-  const checkpoints = [
-    {x:35,y:228},
-    {x:730,y:140},
-    {x:1290,y:135}
-  ];
+function copyLevel(level) {
+  return JSON.parse(JSON.stringify(level));
+}
+function toast(message) {
+  $("toast").textContent = message;
+  $("toast").classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.add("hidden"), 2600);
+}
+function setStatus(message) { $("status").textContent = message; }
+function setRoomStatus(message) { $("room-status").textContent = message; }
 
-  const player = {
-    x:35,y:190,w:26,h:25,vx:0,vy:0,
-    grounded:false,jumps:0,facing:1
-  };
-
-  const treasure = [];
-  platforms.forEach((p,i) => {
-    if (i > 0 && i < platforms.length-1) {
-      treasure.push({
-        x:p.x+p.w/2,
-        y:p.y-20,
-        got:false
-      });
-    }
-  });
-
-  const hazards = [
-    {x:440,y:193,w:25,h:12},
-    {x:750,y:128,w:28,h:12},
-    {x:1080,y:148,w:25,h:12},
-    {x:1450,y:173,w:30,h:12}
-  ];
-
-  function onDown(code) {
-    if (!keys[code] && ["Space","ArrowUp","KeyW"].includes(code))
-      jumpQueued = true;
-    keys[code] = true;
+function setMode(next) {
+  mode = next;
+  $("play-tab").classList.toggle("active", mode === "play");
+  $("builder-tab").classList.toggle("active", mode === "builder");
+  $("community-tab").classList.toggle("active", mode === "community");
+  $("community-panel").classList.toggle("hidden", mode !== "community");
+  $("builder-panel").classList.toggle("hidden", mode !== "builder");
+  if (mode === "builder") {
+    toast("Builder: choose a tool and click the grid.");
+  } else if (mode === "play") {
+    toast("Reach the glowing goal!");
   }
-  function onUp(code) { keys[code] = false; }
+}
 
-  function keydown(e) {
-    if (["Space","ArrowUp","ArrowLeft","ArrowRight"].includes(e.code))
-      e.preventDefault();
-    onDown(e.code);
-  }
-  function keyup(e) { onUp(e.code); }
-
-  addEventListener("keydown",keydown);
-  addEventListener("keyup",keyup);
-
-  function hold(id,code) {
-    const b = document.getElementById(id);
-    b.addEventListener("pointerdown",e=>{
-      e.preventDefault();
-      onDown(code);
-      b.setPointerCapture(e.pointerId);
+function resetPlayer() {
+  const level = levels[currentLevel];
+  player.x = level.start.x;
+  player.y = level.start.y;
+  player.vx = player.vy = 0;
+  player.onGround = false;
+  won = false;
+  levelStarted = performance.now();
+}
+function updateStats() {
+  $("stat-level").textContent = `${currentLevel + 1} / ${levels.length}`;
+  $("stat-jumps").textContent = String(jumps);
+  $("stat-time").textContent = bestTimes[currentLevel]
+    ? bestTimes[currentLevel].toFixed(1) + "s" : "—";
+  $("unlock-text").textContent =
+    `Unlocked through level ${Math.max(progress.unlocked_level, 1)}.`;
+  $("level-list").replaceChildren();
+  levels.forEach((level, i) => {
+    const button = document.createElement("button");
+    button.textContent = String(i + 1);
+    button.title = level.name;
+    button.classList.toggle("active", i === currentLevel);
+    button.disabled = i + 1 > progress.unlocked_level && i >= defaultLevels.length;
+    button.addEventListener("click", () => {
+      currentLevel = i;
+      resetPlayer();
+      updateStats();
     });
-    const release=e=>{e.preventDefault();onUp(code);};
-    b.addEventListener("pointerup",release);
-    b.addEventListener("pointercancel",release);
-    b.addEventListener("lostpointercapture",()=>onUp(code));
-  }
-  hold("tc-left","ArrowLeft");
-  hold("tc-right","ArrowRight");
-  hold("tc-jump","Space");
+    $("level-list").append(button);
+  });
+}
+function goToLevel(index) {
+  currentLevel = Math.max(0, Math.min(levels.length - 1, index));
+  resetPlayer();
+  updateStats();
+  toast(levels[currentLevel].name);
+}
 
-  function rect(x,y,w,h,c) {
-    ctx.fillStyle=c;
-    ctx.fillRect(Math.round(x),Math.round(y),w,h);
+function collide(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+         a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function movePlayer(dt) {
+  if (mode !== "play" || won) return;
+  const left = keys.has("ArrowLeft") || keys.has("a") || held.left;
+  const right = keys.has("ArrowRight") || keys.has("d") || held.right;
+  const jumpPressed = keys.has(" ") || keys.has("ArrowUp") ||
+    keys.has("w") || held.jump;
+
+  player.vx = (right ? 1 : 0) - (left ? 1 : 0);
+  player.vx *= player.speed;
+  player.x += player.vx * dt;
+  player.x = Math.max(0, Math.min(W - player.w, player.x));
+
+  if (jumpPressed && player.onGround) {
+    player.vy = -player.jump;
+    player.onGround = false;
+    jumps++;
+    updateStats();
   }
 
-  function cloudShape(x,y,s,color) {
-    rect(x+5*s,y+5*s,18*s,11*s,color);
-    rect(x+2*s,y+9*s,24*s,8*s,color);
-    rect(x+7*s,y+2*s,8*s,7*s,color);
-    rect(x+15*s,y+4*s,8*s,8*s,color);
-  }
+  player.vy += 1350 * dt;
+  player.y += player.vy * dt;
+  player.onGround = false;
 
-  function background() {
-    rect(0,0,W,H,"#3899e8");
-    // Retro sky clouds
-    for(let i=0;i<7;i++){
-      let x=((i*91-camera*.18)%(W+65)+W+65)%(W+65)-25;
-      let y=24+(i%3)*31;
-      cloudShape(x,y,1.3,"#a8ddff");
-      rect(x+8,y+4,14,4,"#d8f2ff");
+  const level = levels[currentLevel];
+  for (const platform of level.platforms) {
+    const wasAbove = player.y + player.h - player.vy * dt <= platform.y + 3;
+    if (collide(player, platform) && player.vy >= 0 && wasAbove) {
+      player.y = platform.y - player.h;
+      player.vy = 0;
+      player.onGround = true;
     }
-    // Distant mountains
-    for(let i=0;i<8;i++){
-      const x=i*90-camera*.28;
-      ctx.fillStyle="#347ec6";
-      ctx.beginPath();
-      ctx.moveTo(x-40,240);
-      ctx.lineTo(x+35,125+(i%3)*15);
-      ctx.lineTo(x+110,240);
-      ctx.fill();
-    }
-    rect(0,246,W,24,"#2465a6");
-    rect(0,246,W,3,"#69caff");
   }
 
-  function platform(p) {
-    const x=Math.round(p.x-camera);
-    rect(x,p.y,p.w,30,"#344678");
-    rect(x,p.y,p.w,5,"#a5f65d");
-    rect(x,p.y+5,p.w,4,"#48b94c");
-    for(let i=8;i<p.w;i+=16){
-      rect(x+i,p.y+13,7,6,"#52669b");
-      rect(x+i+5,p.y+23,5,4,"#27365f");
+  for (const hazard of level.hazards) {
+    if (collide(player, hazard)) {
+      resetPlayer();
+      toast("Zap! Try that jump again.");
+      return;
     }
-    rect(x+4,p.y+8,4,3,"#d0ff83");
   }
 
-  function drawThundercloud() {
-    const x=Math.round(player.x-camera);
-    const y=Math.round(player.y);
-    const blink=invulnerable>0 && Math.floor(tick*15)%2===0;
-    if(blink)return;
+  if (player.y > H + 100) {
+    resetPlayer();
+    toast("You fell! Try again.");
+    return;
+  }
 
-    // Soft pixel shadow
-    rect(x+3,y+24,22,3,"#205a96");
+  const goal = { x:level.goal.x, y:level.goal.y, w:38, h:60 };
+  if (collide(player, goal)) finishLevel();
+}
 
-    // Cloud outline
-    rect(x+5,y+2,16,3,"#334a83");
-    rect(x+2,y+5,23,12,"#334a83");
-    rect(x+5,y+16,17,4,"#334a83");
+function finishLevel() {
+  if (won) return;
+  won = true;
+  const seconds = (performance.now() - levelStarted) / 1000;
+  bestTimes[currentLevel] = Math.min(bestTimes[currentLevel] ?? Infinity, seconds);
+  progress.current_level = currentLevel + 1;
+  progress.unlocked_level = Math.max(progress.unlocked_level, currentLevel + 2);
+  progress.total_jumps += jumps;
+  updateStats();
+  toast(`Level complete! ${seconds.toFixed(1)} seconds. Press Next to continue.`);
+  if (user) saveProgress().catch(error => setStatus("Save failed: " + error.message));
+}
 
-    // Cloud body
-    rect(x+6,y+4,14,3,"#eaf5ff");
-    rect(x+4,y+7,19,9,"#c8e8ff");
-    rect(x+7,y+16,13,2,"#a2cfff");
-    rect(x+9,y+5,7,3,"#ffffff");
+function roundedRect(x, y, w, h, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  ctx.fill();
+}
+function drawCloud(x, y, color, scale = 1) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(x + 15*scale, y + 18*scale, 15*scale, 10*scale, 0, 0, Math.PI*2);
+  ctx.ellipse(x + 28*scale, y + 12*scale, 12*scale, 13*scale, 0, 0, Math.PI*2);
+  ctx.ellipse(x + 41*scale, y + 18*scale, 15*scale, 10*scale, 0, 0, Math.PI*2);
+  ctx.fill();
+}
+function draw() {
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#182647");
+  sky.addColorStop(1, "#3b5683");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
 
-    // Cute eyes and cheeks
-    rect(x+8,y+10,3,4,"#25335c");
-    rect(x+18,y+10,3,4,"#25335c");
-    rect(x+6,y+14,4,2,"#f38cae");
-    rect(x+20,y+14,3,2,"#f38cae");
+  ctx.globalAlpha = 0.22;
+  for (let i=0;i<8;i++) {
+    drawCloud((i*151 + 30) % W, 40 + (i%3)*55, "#c2d5ff", 1.2);
+  }
+  ctx.globalAlpha = 1;
 
-    // Lightning bolt under the cloud
-    ctx.fillStyle="#ffdb48";
+  const level = levels[currentLevel];
+  for (const p of level.platforms) {
+    roundedRect(p.x, p.y, p.w, p.h, 4, "#26395e");
+    ctx.fillStyle = "#8cb7e8";
+    ctx.fillRect(p.x, p.y, p.w, 4);
+    ctx.fillStyle = "#526d9c";
+    for (let x=p.x+12; x<p.x+p.w-8; x+=24) ctx.fillRect(x,p.y+8,3,3);
+  }
+
+  for (const h of level.hazards) {
+    ctx.fillStyle = "#ff587e";
     ctx.beginPath();
-    ctx.moveTo(x+13,y+18);
-    ctx.lineTo(x+20,y+18);
-    ctx.lineTo(x+15,y+24);
-    ctx.lineTo(x+19,y+24);
-    ctx.lineTo(x+10,y+32);
-    ctx.lineTo(x+12,y+25);
-    ctx.lineTo(x+9,y+25);
+    for (let x=h.x; x<h.x+h.w; x+=15) {
+      ctx.moveTo(x, h.y+h.h);
+      ctx.lineTo(x+7.5, h.y);
+      ctx.lineTo(x+15, h.y+h.h);
+    }
     ctx.fill();
   }
 
-  function drawCoin(c) {
-    if(c.got)return;
-    const x=Math.round(c.x-camera);
-    const y=Math.round(c.y);
-    rect(x-4,y-7,9,14,"#a96022");
-    rect(x-3,y-7,7,12,"#ffcb42");
-    rect(x-1,y-5,3,8,"#fff3a4");
-    rect(x-3,y-5,2,3,"#ffffff");
-  }
+  // Goal marker
+  ctx.fillStyle = "#74f0e5";
+  ctx.fillRect(level.goal.x+12, level.goal.y, 5, 60);
+  ctx.fillStyle = "#ffe67d";
+  ctx.beginPath();
+  ctx.moveTo(level.goal.x+17, level.goal.y);
+  ctx.lineTo(level.goal.x+48, level.goal.y+12);
+  ctx.lineTo(level.goal.x+17, level.goal.y+25);
+  ctx.fill();
 
-  function flag(x,y,active) {
-    const sx=Math.round(x-camera);
-    rect(sx,y,3,34,"#f2f5ff");
-    rect(sx+3,y,18,12,active?"#ff64cb":"#7a85a8");
-    rect(sx+7,y+3,4,3,"#ffffff");
-    rect(sx+9,y+6,3,3,"#ffffff");
-    rect(sx+6,y+9,4,3,"#ffffff");
-  }
+  // Player clouds
+  drawCloud(player.x, player.y, player.color, 0.8);
+  ctx.fillStyle = "#18233f";
+  ctx.fillRect(player.x+16, player.y+13, 3, 4);
+  ctx.fillRect(player.x+26, player.y+13, 3, 4);
+  ctx.fillStyle = "#ffe66d";
+  ctx.beginPath();
+  ctx.moveTo(player.x+20, player.y+18);
+  ctx.lineTo(player.x+15, player.y+27);
+  ctx.lineTo(player.x+22, player.y+24);
+  ctx.lineTo(player.x+20, player.y+30);
+  ctx.lineTo(player.x+29, player.y+19);
+  ctx.lineTo(player.x+23, player.y+21);
+  ctx.fill();
 
-  function spikes(h) {
-    const x=h.x-camera;
-    ctx.fillStyle="#f0f2ff";
-    for(let sx=x;sx<x+h.w;sx+=10){
-      ctx.beginPath();
-      ctx.moveTo(sx,h.y+h.h);
-      ctx.lineTo(sx+5,h.y);
-      ctx.lineTo(sx+10,h.y+h.h);
-      ctx.fill();
+  const now = Date.now();
+  for (const [id, remote] of Object.entries(remotes)) {
+    if (now - remote.time > 5000) {
+      delete remotes[id];
+      continue;
     }
-    rect(x,h.y+h.h-2,h.w,3,"#7d9dc8");
+    if (id === user?.id) continue;
+    drawCloud(remote.x, remote.y, remote.color || "#ffb0d9", 0.8);
+    ctx.fillStyle = "#fff";
+    ctx.font = "12px monospace";
+    ctx.fillText((remote.name || "Cloud player").slice(0,14), remote.x-8, remote.y-4);
   }
 
-  function respawn() {
-    hearts--;
-    if(hearts<=0){
-      hearts=3;
-      coins=0;
-      treasure.forEach(c=>c.got=false);
-      checkpoint=0;
-      message.textContent="Storm reset! Try again!";
-    } else {
-      message.textContent="Zap! Back to checkpoint!";
-    }
-    const cp=checkpoints[checkpoint];
-    player.x=cp.x;
-    player.y=cp.y-25;
-    player.vx=player.vy=0;
-    player.jumps=0;
-    invulnerable=1.4;
+  if (mode === "builder") drawBuilderGrid();
+  if (won) {
+    ctx.fillStyle = "#101426bb";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#74f0e5";
+    ctx.font = "bold 38px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("LEVEL COMPLETE!", W/2, H/2);
+    ctx.font = "18px monospace";
+    ctx.fillStyle = "#fff";
+    ctx.fillText("Press Next Level to continue", W/2, H/2+35);
+    ctx.textAlign = "left";
   }
+}
 
-  function reset() {
-    player.x=35;player.y=190;
-    player.vx=player.vy=0;
-    player.jumps=0;player.grounded=false;
-    camera=0;coins=0;hearts=3;checkpoint=0;
-    won=false;tick=0;invulnerable=0;
-    treasure.forEach(c=>c.got=false);
-    message.textContent="Collect coins and reach the lightning flag!";
+function drawBuilderGrid() {
+  ctx.save();
+  ctx.strokeStyle = "#ffffff22";
+  ctx.lineWidth = 1;
+  for (let x=0; x<W; x+=TILE) {
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
   }
-  document.getElementById("tc-reset").onclick=reset;
+  for (let y=0; y<H; y+=TILE) {
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+  }
+  ctx.restore();
+}
 
-  let last=performance.now();
-
-  function update(dt) {
-    tick+=dt;
-    invulnerable=Math.max(0,invulnerable-dt);
-    if(won)return;
-
-    const left=keys.ArrowLeft||keys.KeyA;
-    const right=keys.ArrowRight||keys.KeyD;
-
-    if(left){player.vx=-135;player.facing=-1;}
-    else if(right){player.vx=135;player.facing=1;}
-    else player.vx*=Math.pow(.002,dt);
-
-    if(jumpQueued){
-      if(player.jumps<2){
-        player.vy=player.jumps===0?-260:-225;
-        player.jumps++;
-        player.grounded=false;
+function frame(now) {
+  const dt = Math.min((now - previousTime) / 1000, 0.035);
+  previousTime = now;
+  movePlayer(dt);
+  draw();
+  if (roomChannel && user && now - lastBroadcast > 120) {
+    lastBroadcast = now;
+    roomChannel.send({
+      type: "broadcast",
+      event: "player",
+      payload: {
+        id: user.id,
+        name: user.email?.split("@")[0] || "Cloud",
+        x: Math.round(player.x),
+        y: Math.round(player.y),
+        color: player.color
       }
-      jumpQueued=false;
-    }
-
-    const oldBottom=player.y+player.h;
-    player.vy=Math.min(400,player.vy+620*dt);
-    player.x+=player.vx*dt;
-    player.y+=player.vy*dt;
-    player.grounded=false;
-
-    if(player.vy>=0){
-      for(const p of platforms){
-        const bottom=player.y+player.h;
-        if(player.x+player.w>p.x&&player.x<p.x+p.w&&
-           oldBottom<=p.y+2&&bottom>=p.y&&bottom<=p.y+18){
-          player.y=p.y-player.h;
-          player.vy=0;
-          player.grounded=true;
-          player.jumps=0;
-          break;
-        }
-      }
-    }
-
-    player.x=Math.max(0,player.x);
-
-    for(const c of treasure){
-      if(!c.got&&Math.abs(player.x+13-c.x)<17&&
-         Math.abs(player.y+12-c.y)<18){
-        c.got=true;
-        coins++;
-        message.textContent="Coin collected! ✨";
-      }
-    }
-
-    for(let i=0;i<checkpoints.length;i++){
-      const cp=checkpoints[i];
-      if(player.grounded&&player.x>=cp.x&&
-         player.x<cp.x+22&&checkpoint<i){
-        checkpoint=i;
-        message.textContent="CHECKPOINT ACTIVATED!";
-      }
-    }
-
-    if(invulnerable<=0){
-      for(const h of hazards){
-        if(player.x+player.w>h.x&&player.x<h.x+h.w&&
-           player.y+player.h>h.y&&player.y<h.y+h.h){
-          respawn();break;
-        }
-      }
-    }
-
-    if(player.y>H+60)respawn();
-
-    if(player.x>1680&&player.grounded){
-      won=true;
-      message.textContent=`YOU SAVED THE SKY! Coins: ${coins} ⚡`;
-    }
-
-    camera=Math.max(0,Math.min(player.x-150,1680-W/2));
-    stats.textContent=`COINS: ${coins} | HEARTS: ${"♥ ".repeat(hearts)} | LEVEL 1`;
-
-    window.thundercloudState={
-      coins,hearts,checkpoint,won,
-      x:player.x,y:player.y
-    };
-  }
-
-  function frame(now){
-    const dt=Math.min((now-last)/1000,.035);
-    last=now;
-    update(dt);
-
-    background();
-    platforms.forEach(platform);
-    checkpoints.forEach((cp,i)=>flag(cp.x,cp.y-34,i<=checkpoint));
-    flag(1690,186,true);
-    treasure.forEach(drawCoin);
-    hazards.forEach(spikes);
-    drawThundercloud();
-
-    requestAnimationFrame(frame);
+    }).catch(() => {});
   }
   requestAnimationFrame(frame);
-})();
+}
+requestAnimationFrame(frame);
+
+// Keyboard controls
+window.addEventListener("keydown", event => {
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  if (["ArrowLeft","ArrowRight","ArrowUp"," "].includes(key)) event.preventDefault();
+  keys.add(key);
+  if (key === "r") resetPlayer();
+});
+window.addEventListener("keyup", event => {
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  keys.delete(key);
+});
+function bindHold(id, property) {
+  const button = $(id);
+  const down = event => { event.preventDefault(); held[property] = true; };
+  const up = event => { event.preventDefault(); held[property] = false; };
+  button.addEventListener("pointerdown", down);
+  button.addEventListener("pointerup", up);
+  button.addEventListener("pointercancel", up);
+  button.addEventListener("pointerleave", up);
+}
+bindHold("left-button", "left");
+bindHold("right-button", "right");
+bindHold("jump-button", "jump");
+
+$("restart-button").addEventListener("click", resetPlayer);
+$("previous-button").addEventListener("click", () => goToLevel(currentLevel - 1));
+$("next-button").addEventListener("click", () => {
+  if (currentLevel < levels.length - 1) goToLevel(currentLevel + 1);
+  else toast("You finished all available levels!");
+});
+$("fullscreen-button").addEventListener("click", async () => {
+  try {
+    if (!document.fullscreenElement) await $("canvas-wrap").requestFullscreen();
+    else await document.exitFullscreen();
+  } catch { toast("Fullscreen is not available in this browser."); }
+});
+$("play-tab").addEventListener("click", () => setMode("play"));
+$("builder-tab").addEventListener("click", () => setMode("builder"));
+$("community-tab").addEventListener("click", () => {
+  setMode("community");
+  loadCommunityLevels();
+});
+
+// Level builder
+function setTool(tool) {
+  builderTool = tool;
+  ["platform","hazard","erase","start","goal"].forEach(name => {
+    $("tool-" + name).classList.toggle("active", name === tool);
+  });
+}
+["platform","hazard","erase","start","goal"].forEach(tool => {
+  $("tool-" + tool).addEventListener("click", () => setTool(tool));
+});
+function freshBuilder() {
+  builder = { platforms:[], hazards:[], start:{x:40,y:420}, goal:{x:850,y:390} };
+}
+$("clear-builder").addEventListener("click", () => {
+  freshBuilder();
+  toast("Builder cleared.");
+});
+canvas.addEventListener("click", event => {
+  if (mode !== "builder") return;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.floor(((event.clientX - rect.left) / rect.width * W) / TILE) * TILE;
+  const y = Math.floor(((event.clientY - rect.top) / rect.height * H) / TILE) * TILE;
+  if (builderTool === "start") {
+    builder.start = { x:Math.max(0, Math.min(W-40, x)), y:Math.max(0, Math.min(H-40, y)) };
+  } else if (builderTool === "goal") {
+    builder.goal = { x:Math.max(0, Math.min(W-50, x)), y:Math.max(0, Math.min(H-60, y)) };
+  } else {
+    const target = builderTool === "platform" ? builder.platforms : builder.hazards;
+    const hit = target.findIndex(item => x >= item.x && x < item.x+item.w && y >= item.y-8 && y < item.y+item.h+8);
+    if (builderTool === "erase") {
+      builder.platforms = builder.platforms.filter(item => !(x >= item.x && x < item.x+item.w && y >= item.y-8 && y < item.y+item.h+8));
+      builder.hazards = builder.hazards.filter(item => !(x >= item.x && x < item.x+item.w && y >= item.y-8 && y < item.y+item.h+8));
+    } else if (hit >= 0) {
+      target.splice(hit,1);
+    } else if (builderTool === "platform") {
+      builder.platforms.push({x,y,w:120,h:18});
+    } else {
+      builder.hazards.push({x,y:y+20,w:80,h:15});
+    }
+  }
+  levels[currentLevel] = {
+    name:$("level-title").value.trim() || "My Cloud Course",
+    platforms:copyLevel(builder).platforms,
+    hazards:copyLevel(builder).hazards,
+    start:{...builder.start}, goal:{...builder.goal}
+  };
+  player.x = builder.start.x;
+  player.y = builder.start.y;
+});
+function captureBuilder() {
+  return {
+    name:$("level-title").value.trim().slice(0,50) || "My Cloud Course",
+    start:{...builder.start},
+    goal:{...builder.goal},
+    platforms:builder.platforms.map(p=>({...p})),
+    hazards:builder.hazards.map(h=>({...h}))
+  };
+}
+$("test-builder").addEventListener("click", () => {
+  const level = captureBuilder();
+  if (!level.platforms.length) {
+    toast("Add at least one platform first.");
+    return;
+  }
+  levels[currentLevel] = level;
+  resetPlayer();
+  setMode("play");
+  toast("Testing your custom level!");
+});
+$("save-local").addEventListener("click", () => {
+  try {
+    localStorage.setItem("thundercloud-custom-level", JSON.stringify(captureBuilder()));
+    toast("Level saved in this browser.");
+  } catch {
+    toast("Browser storage is unavailable.");
+  }
+});
+$("publish-level").addEventListener("click", publishLevel);
+
+// Supabase authentication and cloud progress
+function showAccount(signedInUser) {
+  user = signedInUser || null;
+  $("auth-form").classList.toggle("hidden", !!user);
+  $("signed-in").classList.toggle("hidden", !user);
+  $("account-email").textContent = user ? "Signed in: " + user.email : "";
+}
+async function loadProgress() {
+  if (!user) return;
+  const { data, error } = await supabase
+    .from("parkour_progress")
+    .select("current_level, unlocked_level, total_jumps")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) {
+    setStatus("No cloud save found yet. Play a level, then save.");
+    return;
+  }
+
+  progress = {
+    current_level: Math.max(1, Number(data.current_level) || 1),
+    unlocked_level: Math.max(1, Number(data.unlocked_level) || 1),
+    total_jumps: Math.max(0, Number(data.total_jumps) || 0)
+  };
+  currentLevel = Math.min(defaultLevels.length - 1, progress.current_level - 1);
+  jumps = progress.total_jumps;
+  resetPlayer();
+  updateStats();
+  setStatus("Cloud progress loaded.");
+}
+async function saveProgress() {
+  if (!user) throw new Error("Log in first.");
+  const payload = {
+    current_level: Math.max(1, currentLevel + 1),
+    unlocked_level: Math.max(1, Math.min(defaultLevels.length, progress.unlocked_level)),
+    total_jumps: Math.max(0, jumps)
+  };
+  const { data, error } = await supabase
+    .from("parkour_progress")
+    .update(payload)
+    .eq("user_id", user.id)
+    .select("user_id")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("No progress row was updated. Log out and back in, then try again.");
+  progress = {...progress, ...payload};
+  setStatus("Progress saved to Supabase!");
+}
+$("signup-button").addEventListener("click", async () => {
+  const email = $("email").value.trim();
+  const password = $("password").value;
+  if (!email || password.length < 6) {
+    setStatus("Enter an email and a password with at least 6 characters.");
+    return;
+  }
+  setStatus("Creating account…");
+  const {error} = await supabase.auth.signUp({email,password});
+  setStatus(error ? error.message : "Account created. Check your email if confirmation is required.");
+});
+$("login-button").addEventListener("click", async () => {
+  setStatus("Logging in…");
+  const {error} = await supabase.auth.signInWithPassword({
+    email:$("email").value.trim(), password:$("password").value
+  });
+  if (error) setStatus(error.message);
+});
+$("logout-button").addEventListener("click", async () => {
+  const {error} = await supabase.auth.signOut();
+  if (error) setStatus(error.message);
+  else setStatus("Logged out.");
+});
+$("save-button").addEventListener("click", async () => {
+  try { await saveProgress(); }
+  catch (error) { setStatus("Save failed: " + error.message); }
+});
+supabase.auth.onAuthStateChange((event, session) => {
+  showAccount(session?.user || null);
+  if (session?.user) setTimeout(() => {
+    loadProgress().catch(error => setStatus("Load failed: " + error.message));
+  }, 0);
+});
+const {data: sessionData, error: sessionError} = await supabase.auth.getSession();
+if (sessionError) setStatus(sessionError.message);
+else if (sessionData.session?.user) {
+  showAccount(sessionData.session.user);
+  try { await loadProgress(); } catch (error) { setStatus(error.message); }
+} else {
+  showAccount(null);
+  setStatus("Create an account or log in to save progress.");
+}
+
+// Realtime multiplayer: shared room name, live player positions
+async function joinRoom() {
+  const requested = $("room-name").value.trim().toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "").slice(0,24);
+  if (!requested) {
+    setRoomStatus("Enter a room name.");
+    return;
+  }
+  if (roomChannel) {
+    await supabase.removeChannel(roomChannel);
+    roomChannel = null;
+  }
+  roomName = requested;
+  remotes = {};
+  setRoomStatus("Joining " + roomName + "…");
+
+  roomChannel = supabase.channel("parkour-room-" + roomName, {
+    config: {broadcast:{self:false}}
+  });
+
+  roomChannel.on("broadcast", {event:"player"}, ({payload}) => {
+    if (!payload || typeof payload.id !== "string" || payload.id === user?.id) return;
+    if (!Number.isFinite(payload.x) || !Number.isFinite(payload.y)) return;
+    remotes[payload.id] = {
+      x:Math.max(0,Math.min(W-40,payload.x)),
+      y:Math.max(0,Math.min(H-40,payload.y)),
+      name:String(payload.name || "Cloud").slice(0,16),
+      color:/^#[0-9a-f]{6}$/i.test(payload.color) ? payload.color : "#ffb0d9",
+      time:Date.now()
+    };
+  });
+
+  roomChannel.subscribe(status => {
+    if (status === "SUBSCRIBED") {
+      setRoomStatus("Connected to " + roomName + ". Share this room name with friends.");
+    } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+      setRoomStatus("Room connection failed. Check Supabase Realtime settings.");
+    } else if (status === "CLOSED") {
+      setRoomStatus("Room disconnected.");
+    }
+  });
+}
+$("join-room").addEventListener("click", joinRoom);
+
+// Community levels: custom_levels table with RLS
+function validCommunityLevel(level) {
+  if (!level || !Array.isArray(level.platforms) || !Array.isArray(level.hazards)) return false;
+  if (level.platforms.length > 150 || level.hazards.length > 100) return false;
+  const validRect = r => r && [r.x,r.y,r.w,r.h].every(Number.isFinite) &&
+    r.x >= 0 && r.y >= 0 && r.x < W && r.y < H &&
+    r.w > 0 && r.h > 0 && r.w <= W && r.h <= H;
+  return validRect({...level.start,w:1,h:1}) &&
+    validRect({...level.goal,w:1,h:1}) &&
+    level.platforms.every(validRect) && level.hazards.every(validRect);
+}
+async function publishLevel() {
+  if (!user) {
+    setStatus("Log in to publish a community level.");
+    return;
+  }
+  const level = captureBuilder();
+  if (!validCommunityLevel(level)) {
+    setStatus("This level has invalid or too many objects.");
+    return;
+  }
+  setStatus("Publishing level…");
+  const {error} = await supabase.from("custom_levels").insert({
+    author_id:user.id,
+    title:level.name,
+    level_data:level,
+    is_public:true
+  });
+  setStatus(error ? "Publish failed: " + error.message : "Level published!");
+  if (!error) await loadCommunityLevels();
+}
+async function loadCommunityLevels() {
+  const list = $("community-list");
+  list.replaceChildren();
+  const {data,error} = await supabase
+    .from("custom_levels")
+    .select("id,title,level_data,created_at")
+    .eq("is_public",true)
+    .order("created_at",{ascending:false})
+    .limit(40);
+  if (error) {
+    list.textContent = "Couldn't load levels: " + error.message;
+    return;
+  }
+  if (!data?.length) {
+    list.textContent = "No community levels yet. Sign in and publish one!";
+    return;
+  }
+  for (const item of data) {
+    const button = document.createElement("button");
+    button.className = "level-card";
+    button.textContent = item.title;
+    button.addEventListener("click", () => {
+      const level = item.level_data;
+      if (!validCommunityLevel(level)) {
+        toast("That community level has invalid data.");
+        return;
+      }
+      levels.push({...copyLevel(level), name:item.title});
+      currentLevel = levels.length - 1;
+      resetPlayer();
+      updateStats();
+      setMode("play");
+      toast("Loaded community level: " + item.title);
+    });
+    list.append(button);
+  }
+}
+$("refresh-community").addEventListener("click", loadCommunityLevels);
+
+// Restore local builder draft, if one exists.
+try {
+  const draft = JSON.parse(localStorage.getItem("thundercloud-custom-level") || "null");
+  if (draft && validCommunityLevel(draft)) {
+    builder = {
+      platforms:draft.platforms.map(p=>({...p})),
+      hazards:draft.hazards.map(h=>({...h})),
+      start:{...draft.start}, goal:{...draft.goal}
+    };
+    $("level-title").value = draft.name || "My Cloud Course";
+  }
+} catch { /* Ignore a damaged local draft. */ }
+
+levels = defaultLevels.map(copyLevel);
+resetPlayer();
+updateStats();
+joinRoom();
+setStatus(user ? "Account ready." : "Ready! Sign in to save your progress.");
