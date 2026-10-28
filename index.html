@@ -4,25 +4,324 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Parkour Challenge</title>
+  <title>Thundercloud Parkour</title>
+
   <style>
-    body { margin: 0; overflow: hidden; }
-    canvas { display: block; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #101426;
+      color: white;
+      font-family: monospace;
+    }
+
+    #account-panel {
+      position: fixed;
+      z-index: 1000;
+      top: 12px;
+      right: 12px;
+      width: min(320px, calc(100vw - 48px));
+      padding: 16px;
+      background: #202945;
+      border: 2px solid #7c9cff;
+      border-radius: 12px;
+      box-sizing: border-box;
+    }
+
+    #account-panel h2 {
+      margin: 0 0 12px;
+      color: #b8caff;
+      font-size: 18px;
+    }
+
+    #account-panel input,
+    #account-panel button {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 8px;
+      padding: 10px;
+      border-radius: 6px;
+      font: inherit;
+    }
+
+    #account-panel input {
+      color: white;
+      background: #111a30;
+      border: 1px solid #63749e;
+    }
+
+    #account-panel button {
+      cursor: pointer;
+      color: #111a30;
+      background: #9db5ff;
+      border: 0;
+      font-weight: bold;
+    }
+
+    #account-panel button.secondary {
+      color: white;
+      background: #3b486b;
+    }
+
+    #account-status {
+      margin: 10px 0 0;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    #account-help {
+      font-size: 11px;
+      color: #c5cee5;
+      line-height: 1.5;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
   </style>
 </head>
+
 <body>
-  <script type="module" src="./parkour.js"></script>
+  <section id="account-panel">
+    <h2>⚡ Thundercloud Account</h2>
+
+    <div id="auth-form">
+      <input id="email" type="email"
+        placeholder="Email address" autocomplete="email">
+
+      <input id="password" type="password"
+        placeholder="Password (at least 6 characters)"
+        autocomplete="current-password">
+
+      <button id="signup-button">Create Account</button>
+      <button id="login-button" class="secondary">Log In</button>
+
+      <p id="account-help">
+        If email confirmation is enabled in Supabase,
+        check your inbox after signing up.
+      </p>
+    </div>
+
+    <div id="signed-in" hidden>
+      <p id="account-email"></p>
+      <p id="progress-display">Loading saved progress...</p>
+      <button id="save-button">Save Progress</button>
+      <button id="logout-button" class="secondary">Log Out</button>
+    </div>
+
+    <p id="account-status" role="status">Connecting...</p>
+  </section>
+
+  <script type="module">
+    import { createClient } from
+      "https://esm.sh/@supabase/supabase-js@2";
+
+    const supabase = createClient(
+      "https://qorfczqljrvxfouodhcp.supabase.co",
+      "sb_publishable_C4uGBFM5nmiGWOPanRqWvQ_SPbC0eRb"
+    );
+
+    const $ = (id) => document.getElementById(id);
+    const status = (message) => {
+      $("account-status").textContent = message;
+    };
+
+    let currentUser = null;
+    let savedProgress = {
+      current_level: 1,
+      unlocked_level: 1,
+      total_jumps: 0
+    };
+
+    function showSignedIn(user) {
+      currentUser = user;
+      $("auth-form").hidden = Boolean(user);
+      $("signed-in").hidden = !user;
+      $("account-email").textContent =
+        user ? "Signed in: " + user.email : "";
+    }
+
+    async function loadProgress() {
+      if (!currentUser) return;
+
+      const { data, error } = await supabase
+        .from("parkour_progress")
+        .select("current_level, unlocked_level, total_jumps")
+        .eq("user_id", currentUser.id)
+        .maybeSingle();
+
+      if (error) {
+        status("Couldn't load progress: " + error.message);
+        return;
+      }
+
+      if (data) {
+        savedProgress = data;
+      }
+
+      $("progress-display").textContent =
+        `Level: ${savedProgress.current_level} | ` +
+        `Unlocked: ${savedProgress.unlocked_level} | ` +
+        `Jumps: ${savedProgress.total_jumps}`;
+
+      status("Progress loaded.");
+
+      // The game can read the loaded values.
+      window.dispatchEvent(new CustomEvent("cloud-progress-loaded", {
+        detail: { ...savedProgress }
+      }));
+    }
+
+    async function saveProgress(progress = {}) {
+      if (!currentUser) {
+        throw new Error("Log in before saving progress.");
+      }
+
+      // Only save columns permitted by the database policies.
+      const next = {
+        current_level: Math.max(1, Math.floor(
+          Number(progress.current_level ?? savedProgress.current_level)
+        )),
+        unlocked_level: Math.max(1, Math.floor(
+          Number(progress.unlocked_level ?? savedProgress.unlocked_level)
+        )),
+        total_jumps: Math.max(0, Math.floor(
+          Number(progress.total_jumps ?? savedProgress.total_jumps)
+        ))
+      };
+
+      if (!Object.values(next).every(Number.isSafeInteger)) {
+        throw new Error("Progress values must be valid whole numbers.");
+      }
+
+      const { data, error } = await supabase
+        .from("parkour_progress")
+        .update(next)
+        .eq("user_id", currentUser.id)
+        .select("current_level, unlocked_level, total_jumps")
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (!data) {
+        throw new Error(
+          "No progress row was updated. Check that your account's " +
+          "parkour_progress row exists."
+        );
+      }
+
+      savedProgress = data;
+      $("progress-display").textContent =
+        `Level: ${data.current_level} | ` +
+        `Unlocked: ${data.unlocked_level} | ` +
+        `Jumps: ${data.total_jumps}`;
+
+      status("Progress saved to the cloud!");
+      return data;
+    }
+
+    $("signup-button").addEventListener("click", async () => {
+      const email = $("email").value.trim();
+      const password = $("password").value;
+
+      if (!email || password.length < 6) {
+        status("Enter an email and a password of at least 6 characters.");
+        return;
+      }
+
+      status("Creating account...");
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password
+      });
+
+      if (error) {
+        status(error.message);
+        return;
+      }
+
+      if (data.session) {
+        status("Account created!");
+      } else {
+        status("Account created. Check your email to confirm, then log in.");
+      }
+    });
+
+    $("login-button").addEventListener("click", async () => {
+      const email = $("email").value.trim();
+      const password = $("password").value;
+
+      status("Logging in...");
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (error) status(error.message);
+    });
+
+    $("logout-button").addEventListener("click", async () => {
+      const { error } = await supabase.auth.signOut();
+      if (error) status(error.message);
+      else status("Logged out.");
+    });
+
+    $("save-button").addEventListener("click", async () => {
+      try {
+        await saveProgress();
+      } catch (error) {
+        status("Save failed: " + error.message);
+      }
+    });
+
+    // Give parkour.js access to account and cloud-save functions.
+    window.parkourCloud = {
+      supabase,
+      getUser: () => currentUser,
+      getProgress: () => ({ ...savedProgress }),
+      loadProgress,
+      saveProgress
+    };
+
+    supabase.auth.onAuthStateChange((event, session) => {
+      showSignedIn(session?.user ?? null);
+
+      if (session?.user) {
+        // Avoid making additional auth calls inside this callback.
+        setTimeout(() => loadProgress(), 0);
+      } else {
+        savedProgress = {
+          current_level: 1,
+          unlocked_level: 1,
+          total_jumps: 0
+        };
+        $("progress-display").textContent = "";
+        status("Log in to load your cloud save.");
+      }
+    });
+
+    const { data: sessionData, error: sessionError } =
+      await supabase.auth.getSession();
+
+    if (sessionError) {
+      status("Session error: " + sessionError.message);
+    } else if (sessionData.session?.user) {
+      showSignedIn(sessionData.session.user);
+      await loadProgress();
+    } else {
+      showSignedIn(null);
+      status("Create an account or log in.");
+    }
+
+    // Start the game only after the cloud API is ready.
+    try {
+      await import("./parkour.js");
+    } catch (error) {
+      console.error("Game failed to load:", error);
+      status("Account ready, but parkour.js failed to load.");
+    }
+  </script>
 </body>
 </html>
-
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-
-<script>
-  const supabaseClient = supabase.createClient(
-    "https://qorfczqljrvxfouodhcp.supabase.co",
-    "sb_publishable_C4uGBFM5nmiGWOPanRqWvQ_SPbC0eRb"
-  );
-
-  console.log("Supabase client initialized!");
-</script>
-
