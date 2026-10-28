@@ -1,18 +1,29 @@
-
 import { createClient } from
   "https://esm.sh/@supabase/supabase-js@2";
 
-// ============================================================
-// THUNDERCLOUD PARKOUR
-// Complete game logic for the existing index.html.
-// ============================================================
+/* =========================================================
+   THUNDERCLOUD PARKOUR
+   Full JavaScript replacement
+   Controls:
+   A/D or arrows = move
+   W / Up / Space = jump
+   F = hold to glide
+   R = restart
+   ========================================================= */
+
+const SUPABASE_URL =
+  "https://qorfczqljrvxfouodhcp.supabase.co";
+
+const SUPABASE_KEY =
+  "sb_publishable_C4uGBFM5nmiGWOPanRqWvQ_SPbC0eRb";
 
 const supabase = createClient(
-  "https://qorfczqljrvxfouodhcp.supabase.co",
-  "sb_publishable_C4uGBFM5nmiGWOPanRqWvQ_SPbC0eRb"
+  SUPABASE_URL,
+  SUPABASE_KEY
 );
 
 const $ = id => document.getElementById(id);
+
 const canvas = $("game");
 const ctx = canvas.getContext("2d");
 
@@ -21,32 +32,76 @@ const H = canvas.height;
 const TILE = 40;
 
 let user = null;
+let mode = "play";
+let currentLevel = 0;
+let jumps = 0;
+let deaths = 0;
+let won = false;
+let levelStarted = performance.now();
+let previousTime = performance.now();
+let lastBroadcast = 0;
+let roomChannel = null;
+let roomName = "";
+let toastTimer = null;
+let animationTime = 0;
+let communityLevels = [];
+let communitySearch = "";
+let communitySort = "newest";
+let communityPage = 0;
+let communityPageSize = 12;
+let builderTool = "platform";
+let editorDirty = false;
+let checkpoints = [];
+let checkpoint = null;
+
 let progress = {
   current_level: 1,
   unlocked_level: 1,
   total_jumps: 0
 };
 
-let jumps = 0;
-let currentLevel = 0;
-let mode = "play";
-let builderTool = "platform";
-let roomChannel = null;
-let roomName = "";
-let remotes = {};
-let lastBroadcast = 0;
-let toastTimer = null;
-let won = false;
-let previousTime = performance.now();
-let levelStarted = performance.now();
-
 const bestTimes = {};
 const keys = new Set();
-const held = { left: false, right: false, jump: false };
+const remotes = {};
 
-// ============================================================
-// LEVELS
-// ============================================================
+const held = {
+  left: false,
+  right: false,
+  jump: false,
+  glide: false
+};
+
+const PHYSICS = {
+  gravity: 1450,
+  glideGravity: 260,
+  maxFallSpeed: 850,
+  glideFallSpeed: 155,
+  airControl: 0.85,
+  groundControl: 1,
+  acceleration: 1800,
+  friction: 2200,
+  jumpPower: 535,
+  glideSpeed: 285,
+  playerSpeed: 285
+};
+
+const player = {
+  x: 50,
+  y: 420,
+  w: 34,
+  h: 30,
+  vx: 0,
+  vy: 0,
+  speed: PHYSICS.playerSpeed,
+  onGround: false,
+  color: "#a9c4ff",
+  facing: 1,
+  gliding: false,
+  coyote: 0,
+  jumpBuffer: 0,
+  invulnerable: 0,
+  respawnFlash: 0
+};
 
 const defaultLevels = [
   {
@@ -241,139 +296,53 @@ const defaultLevels = [
   }
 ];
 
-const copyLevel = level => JSON.parse(JSON.stringify(level));
 let levels = defaultLevels.map(copyLevel);
 
-const player = {
-  x: 50,
-  y: 420,
-  w: 34,
-  h: 30,
-  vx: 0,
-  vy: 0,
-  speed: 270,
-  jump: 520,
-  onGround: false,
-  jumpWasHeld: false,
-  color: "#a9c4ff"
-};
-
 let builder = {
+  name: "My Cloud Course",
   platforms: [],
   hazards: [],
-  start: { x: 60, y: 430 },
+  start: { x: 40, y: 420 },
   goal: { x: 850, y: 390 }
 };
 
-// ============================================================
-// UI HELPERS
-// ============================================================
+/* =========================
+   GENERAL HELPERS
+   ========================= */
+
+function copyLevel(level) {
+  return JSON.parse(JSON.stringify(level));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
 
 function toast(message) {
-  $("toast").textContent = message;
-  $("toast").classList.remove("hidden");
+  const element = $("toast");
+  if (!element) return;
+
+  element.textContent = message;
+  element.classList.remove("hidden");
+
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(
-    () => $("toast").classList.add("hidden"),
-    2600
-  );
+
+  toastTimer = setTimeout(() => {
+    element.classList.add("hidden");
+  }, 2800);
 }
 
 function setStatus(message) {
-  $("status").textContent = message;
+  if ($("status")) $("status").textContent = message;
 }
 
 function setRoomStatus(message) {
-  $("room-status").textContent = message;
-}
-
-function setMode(next) {
-  mode = next;
-
-  $("play-tab").classList.toggle("active", mode === "play");
-  $("builder-tab").classList.toggle("active", mode === "builder");
-  $("community-tab").classList.toggle("active", mode === "community");
-
-  $("community-panel").classList.toggle(
-    "hidden", mode !== "community"
-  );
-  $("builder-panel").classList.toggle(
-    "hidden", mode !== "builder"
-  );
-
-  if (mode === "builder") {
-    toast("Choose a tool, then click the grid.");
+  if ($("room-status")) {
+    $("room-status").textContent = message;
   }
 }
 
-function updateStats() {
-  $("stat-level").textContent =
-    `${currentLevel + 1} / ${levels.length}`;
-
-  $("stat-jumps").textContent = String(jumps);
-
-  $("stat-time").textContent =
-    bestTimes[currentLevel] !== undefined
-      ? bestTimes[currentLevel].toFixed(1) + "s"
-      : "—";
-
-  $("unlock-text").textContent =
-    `Unlocked through level ${Math.max(progress.unlocked_level, 1)}.`;
-
-  const list = $("level-list");
-  list.replaceChildren();
-
-  levels.forEach((level, index) => {
-    const button = document.createElement("button");
-    button.textContent = String(index + 1);
-    button.title = level.name;
-    button.classList.toggle("active", index === currentLevel);
-
-    button.disabled =
-      index + 1 > progress.unlocked_level &&
-      index < defaultLevels.length;
-
-    button.addEventListener("click", () => {
-      if (index >= defaultLevels.length &&
-          index + 1 > progress.unlocked_level) {
-        toast("Finish more levels to unlock this level.");
-        return;
-      }
-
-      currentLevel = index;
-      resetPlayer();
-      updateStats();
-    });
-
-    list.append(button);
-  });
-}
-
-function resetPlayer() {
-  const level = levels[currentLevel];
-
-  player.x = level.start.x;
-  player.y = level.start.y;
-  player.vx = 0;
-  player.vy = 0;
-  player.onGround = false;
-  player.jumpWasHeld = false;
-  won = false;
-  levelStarted = performance.now();
-}
-
-function goToLevel(index) {
-  currentLevel = Math.max(
-    0,
-    Math.min(levels.length - 1, index)
-  );
-
-  resetPlayer();
-  updateStats();
-  toast(levels[currentLevel].name);
-}
-
-function collide(a, b) {
+function rectanglesOverlap(a, b) {
   return (
     a.x < b.x + b.w &&
     a.x + a.w > b.x &&
@@ -382,17 +351,389 @@ function collide(a, b) {
   );
 }
 
-// ============================================================
-// COLLISION AND PHYSICS
-// ============================================================
+function validRect(rect) {
+  return rect &&
+    [rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) &&
+    rect.x >= 0 &&
+    rect.y >= 0 &&
+    rect.x < W &&
+    rect.y < H &&
+    rect.w > 0 &&
+    rect.h > 0 &&
+    rect.w <= W &&
+    rect.h <= H;
+}
+
+function validCommunityLevel(level) {
+  if (!level ||
+      !Array.isArray(level.platforms) ||
+      !Array.isArray(level.hazards)) {
+    return false;
+  }
+
+  if (level.platforms.length > 150 ||
+      level.hazards.length > 100) {
+    return false;
+  }
+
+  return (
+    validRect({ ...level.start, w: 1, h: 1 }) &&
+    validRect({ ...level.goal, w: 1, h: 1 }) &&
+    level.platforms.every(validRect) &&
+    level.hazards.every(validRect)
+  );
+}
+
+/* =========================
+   SEPARATE APP SCREENS
+   ========================= */
+
+function createScreenStyles() {
+  if ($("extra-game-styles")) return;
+
+  const style = document.createElement("style");
+  style.id = "extra-game-styles";
+
+  style.textContent = `
+    .game-screen-heading {
+      font-size: 22px;
+      color: #c7d5ff;
+      margin: 10px 0;
+    }
+
+    .game-screen-description {
+      color: #bac5e1;
+      line-height: 1.7;
+    }
+
+    .game-screen-controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 12px 0;
+    }
+
+    .game-screen-controls input,
+    .game-screen-controls select {
+      flex: 1;
+      min-width: 160px;
+    }
+
+    .community-grid {
+      display: grid;
+      grid-template-columns:
+        repeat(auto-fill, minmax(210px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .community-card {
+      min-height: 125px;
+      text-align: left;
+      padding: 14px;
+      background: #17213c;
+      border: 1px solid #53658e;
+      border-radius: 10px;
+      color: white;
+    }
+
+    .community-card strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+
+    .community-card small {
+      color: #bac5e1;
+    }
+
+    .community-card:hover {
+      border-color: #74f0e5;
+      transform: translateY(-2px);
+    }
+
+    .game-screen {
+      padding: 18px;
+      min-height: 450px;
+      background: #202945;
+      border: 1px solid #344367;
+      border-radius: 12px;
+      margin: 12px;
+    }
+
+    .game-screen button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    .game-pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .glide-indicator {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      padding: 7px 10px;
+      border-radius: 7px;
+      color: #101426;
+      background: #74f0e5;
+      font-weight: bold;
+      pointer-events: none;
+    }
+
+    .editor-help {
+      padding: 10px;
+      background: #17213c;
+      border-radius: 8px;
+      color: #c7d5ff;
+      margin: 10px 0;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 650px) {
+      .game-screen {
+        margin: 5px;
+        padding: 10px;
+      }
+      .community-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  `;
+
+  document.head.appendChild(style);
+}
+
+function createAdditionalScreens() {
+  createScreenStyles();
+
+  const main = document.querySelector("main");
+  if (!main) return;
+
+  const screenHost = document.createElement("section");
+  screenHost.id = "extra-screen-host";
+  screenHost.className = "hidden";
+  screenHost.style.gridColumn = "1 / -1";
+  main.appendChild(screenHost);
+
+  const glideIndicator = document.createElement("div");
+  glideIndicator.id = "glide-indicator";
+  glideIndicator.className = "glide-indicator hidden";
+  glideIndicator.textContent = "F · GLIDING";
+  $("canvas-wrap").appendChild(glideIndicator);
+
+  buildCommunityScreen();
+  buildEditorScreen();
+}
+
+function showMainGame(show) {
+  const main = document.querySelector("main");
+  if (!main) return;
+
+  const host = $("extra-screen-host");
+
+  Array.from(main.children).forEach(child => {
+    if (child === host) return;
+    child.classList.toggle("hidden", !show);
+  });
+
+  host.classList.toggle("hidden", show);
+}
+
+function setMode(nextMode) {
+  mode = nextMode;
+
+  $("play-tab").classList.toggle(
+    "active",
+    mode === "play"
+  );
+
+  $("builder-tab").classList.toggle(
+    "active",
+    mode === "builder"
+  );
+
+  $("community-tab").classList.toggle(
+    "active",
+    mode === "community"
+  );
+
+  if (mode === "play") {
+    showMainGame(true);
+    toast("Reach the glowing goal! Hold F to glide.");
+  } else {
+    showMainGame(false);
+
+    if (mode === "builder") {
+      $("extra-screen-host").innerHTML = "";
+      $("extra-screen-host").appendChild(
+        $("editor-screen")
+      );
+      refreshEditorPreview();
+      toast("Level Editor opened.");
+    }
+
+    if (mode === "community") {
+      $("extra-screen-host").innerHTML = "";
+      $("extra-screen-host").appendChild(
+        $("community-screen")
+      );
+      loadCommunityLevels();
+    }
+  }
+}
+
+/* =========================
+   PLAYER AND CHECKPOINTS
+   ========================= */
+
+function resetPlayer() {
+  const level = levels[currentLevel];
+  if (!level) return;
+
+  const spawn = checkpoint || level.start;
+
+  player.x = spawn.x;
+  player.y = spawn.y;
+  player.vx = 0;
+  player.vy = 0;
+  player.onGround = false;
+  player.gliding = false;
+  player.coyote = 0;
+  player.jumpBuffer = 0;
+  player.invulnerable = 0.5;
+
+  won = false;
+  levelStarted = performance.now();
+
+  if ($("glide-indicator")) {
+    $("glide-indicator").classList.add("hidden");
+  }
+}
+
+function respawnPlayer(message) {
+  deaths++;
+  resetPlayer();
+
+  if (message) toast(message);
+}
+
+function goToLevel(index) {
+  currentLevel = clamp(index, 0, levels.length - 1);
+  checkpoint = null;
+
+  resetPlayer();
+  updateStats();
+
+  toast(levels[currentLevel].name);
+}
+
+function finishLevel() {
+  if (won) return;
+
+  won = true;
+
+  const seconds = (performance.now() - levelStarted) / 1000;
+
+  bestTimes[currentLevel] = Math.min(
+    bestTimes[currentLevel] ?? Infinity,
+    seconds
+  );
+
+  progress.current_level = currentLevel + 1;
+
+  progress.unlocked_level = Math.max(
+    progress.unlocked_level,
+    currentLevel + 2
+  );
+
+  progress.total_jumps = Math.max(
+    progress.total_jumps,
+    jumps
+  );
+
+  updateStats();
+
+  toast(
+    `Level complete! ${seconds.toFixed(1)} seconds.`
+  );
+
+  if (user) {
+    saveProgress().catch(error => {
+      setStatus("Save failed: " + error.message);
+    });
+  }
+}
+
+function updateStats() {
+  if ($("stat-level")) {
+    $("stat-level").textContent =
+      `${currentLevel + 1} / ${levels.length}`;
+  }
+
+  if ($("stat-jumps")) {
+    $("stat-jumps").textContent = String(jumps);
+  }
+
+  if ($("stat-time")) {
+    $("stat-time").textContent =
+      bestTimes[currentLevel] !== undefined
+        ? bestTimes[currentLevel].toFixed(1) + "s"
+        : "—";
+  }
+
+  if ($("unlock-text")) {
+    $("unlock-text").textContent =
+      `Unlocked through level ${progress.unlocked_level}.`;
+  }
+
+  const list = $("level-list");
+  if (!list) return;
+
+  list.replaceChildren();
+
+  levels.forEach((level, index) => {
+    const button = document.createElement("button");
+
+    button.textContent = String(index + 1);
+    button.title = level.name;
+    button.classList.toggle(
+      "active",
+      index === currentLevel
+    );
+
+    button.addEventListener("click", () => {
+      if (
+        index >= defaultLevels.length &&
+        index + 1 > progress.unlocked_level
+      ) {
+        toast("Complete earlier levels first.");
+        return;
+      }
+
+      goToLevel(index);
+    });
+
+    list.appendChild(button);
+  });
+}
+
+/* =========================
+   MOVEMENT AND COLLISIONS
+   ========================= */
 
 function movePlayer(dt) {
   if (mode !== "play" || won) return;
 
-  // Clamp large frame times to prevent tunneling.
-  dt = Math.min(Math.max(dt, 0), 1 / 30);
-
-  const level = levels[currentLevel];
+  dt = Math.min(dt, 0.025);
 
   const left =
     keys.has("ArrowLeft") ||
@@ -410,129 +751,241 @@ function movePlayer(dt) {
     keys.has("w") ||
     held.jump;
 
-  // Jump on a fresh press, not every frame Space is held.
-  const jumpPressed =
-    jumpHeld && !player.jumpWasHeld;
+  const glideHeld =
+    keys.has("f") ||
+    held.glide;
 
-  player.jumpWasHeld = jumpHeld;
+  const direction =
+    (right ? 1 : 0) - (left ? 1 : 0);
 
-  // Save the old position before moving.
-  const oldX = player.x;
-  const oldY = player.y;
+  if (direction !== 0) {
+    player.facing = direction;
+  }
 
-  // Horizontal movement.
-  const direction = Number(right) - Number(left);
-  player.vx = direction * player.speed;
-  player.x += player.vx * dt;
-
-  player.x = Math.max(
-    0,
-    Math.min(W - player.w, player.x)
+  const targetSpeed = direction * (
+    player.onGround
+      ? PHYSICS.playerSpeed
+      : PHYSICS.glideSpeed
   );
 
-  // Horizontal wall collisions.
-  for (const platform of level.platforms) {
-    const overlapsY =
-      player.y < platform.y + platform.h &&
-      player.y + player.h > platform.y;
+  const control = player.onGround
+    ? PHYSICS.groundControl
+    : PHYSICS.airControl;
 
-    const overlapsX =
-      player.x < platform.x + platform.w &&
-      player.x + player.w > platform.x;
+  if (direction !== 0) {
+    player.vx += clamp(
+      targetSpeed - player.vx,
+      -PHYSICS.acceleration * control * dt,
+      PHYSICS.acceleration * control * dt
+    );
+  } else if (player.onGround) {
+    const friction = PHYSICS.friction * dt;
 
-    if (!overlapsX || !overlapsY) continue;
-
-    if (
-      player.vx > 0 &&
-      oldX + player.w <= platform.x + 1
-    ) {
-      player.x = platform.x - player.w;
-    } else if (
-      player.vx < 0 &&
-      oldX >= platform.x + platform.w - 1
-    ) {
-      player.x = platform.x + platform.w;
+    if (Math.abs(player.vx) <= friction) {
+      player.vx = 0;
     } else {
-      // Resolve any overlap safely.
-      const pushLeft =
-        player.x + player.w - platform.x;
-      const pushRight =
-        platform.x + platform.w - player.x;
-
-      if (pushLeft < pushRight) {
-        player.x = platform.x - player.w;
-      } else {
-        player.x = platform.x + platform.w;
-      }
+      player.vx -= Math.sign(player.vx) * friction;
     }
   }
 
-  // Jump only when grounded.
-  if (jumpPressed && player.onGround) {
-    player.vy = -player.jump;
+  player.vx = clamp(
+    player.vx,
+    -PHYSICS.playerSpeed,
+    PHYSICS.playerSpeed
+  );
+
+  if (jumpHeld) {
+    player.jumpBuffer = 0.12;
+  } else {
+    player.jumpBuffer = Math.max(
+      0,
+      player.jumpBuffer - dt
+    );
+  }
+
+  if (player.onGround) {
+    player.coyote = 0.12;
+  } else {
+    player.coyote = Math.max(
+      0,
+      player.coyote - dt
+    );
+  }
+
+  if (
+    player.jumpBuffer > 0 &&
+    player.coyote > 0
+  ) {
+    player.vy = -PHYSICS.jumpPower;
     player.onGround = false;
+    player.coyote = 0;
+    player.jumpBuffer = 0;
     jumps++;
+
     updateStats();
   }
 
-  // Gravity.
-  player.vy = Math.min(
-    player.vy + 1350 * dt,
-    1000
+  player.gliding =
+    glideHeld &&
+    !player.onGround &&
+    player.vy > 0;
+
+  if (player.gliding) {
+    player.vy += PHYSICS.glideGravity * dt;
+    player.vy = Math.min(
+      player.vy,
+      PHYSICS.glideFallSpeed
+    );
+  } else {
+    player.vy += PHYSICS.gravity * dt;
+    player.vy = Math.min(
+      player.vy,
+      PHYSICS.maxFallSpeed
+    );
+  }
+
+  if ($("glide-indicator")) {
+    $("glide-indicator").classList.toggle(
+      "hidden",
+      !player.gliding
+    );
+  }
+
+  moveHorizontally(dt);
+  moveVertically(dt);
+  checkHazardsAndGoal();
+
+  player.invulnerable = Math.max(
+    0,
+    player.invulnerable - dt
   );
+}
+
+function moveHorizontally(dt) {
+  const level = levels[currentLevel];
+
+  const previousX = player.x;
+  player.x += player.vx * dt;
+
+  player.x = clamp(
+    player.x,
+    0,
+    W - player.w
+  );
+
+  for (const platform of level.platforms) {
+    if (!rectanglesOverlap(player, platform)) continue;
+
+    if (player.vx > 0) {
+      player.x = platform.x - player.w;
+    } else if (player.vx < 0) {
+      player.x = platform.x + platform.w;
+    }
+
+    player.vx = 0;
+  }
+
+  if (player.x < 0) {
+    player.x = 0;
+    player.vx = 0;
+  }
+
+  if (player.x + player.w > W) {
+    player.x = W - player.w;
+    player.vx = 0;
+  }
+
+  if (!Number.isFinite(player.x)) {
+    player.x = previousX;
+    player.vx = 0;
+  }
+}
+
+function moveVertically(dt) {
+  const level = levels[currentLevel];
+
+  const previousY = player.y;
+  const previousBottom = previousY + player.h;
+  const previousTop = previousY;
 
   player.y += player.vy * dt;
   player.onGround = false;
 
-  // Vertical collision resolution.
-  // This catches both landing on tops and hitting undersides.
   for (const platform of level.platforms) {
-    const overlapsX =
-      player.x < platform.x + platform.w &&
-      player.x + player.w > platform.x;
+    const horizontalOverlap =
+      player.x + player.w > platform.x &&
+      player.x < platform.x + platform.w;
 
-    if (!overlapsX) continue;
+    if (!horizontalOverlap) continue;
 
-    const oldBottom = oldY + player.h;
-    const newBottom = player.y + player.h;
+    const currentBottom = player.y + player.h;
+    const currentTop = player.y;
+    const platformBottom = platform.y + platform.h;
 
+    // Land on the top when descending through it.
     if (
       player.vy >= 0 &&
-      oldBottom <= platform.y + 2 &&
-      newBottom >= platform.y
+      previousBottom <= platform.y + 1 &&
+      currentBottom >= platform.y
     ) {
-      // Land on top of the platform.
       player.y = platform.y - player.h;
       player.vy = 0;
       player.onGround = true;
-    } else if (
+      continue;
+    }
+
+    // Hit the underside when jumping upward.
+    if (
       player.vy < 0 &&
-      oldY >= platform.y + platform.h - 2 &&
-      player.y <= platform.y + platform.h
+      previousTop >= platformBottom - 1 &&
+      currentTop <= platformBottom
     ) {
-      // Hit the underside while jumping.
-      player.y = platform.y + platform.h;
+      player.y = platformBottom;
       player.vy = 0;
+      continue;
+    }
+
+    // Resolve any remaining overlap vertically.
+    if (rectanglesOverlap(player, platform)) {
+      if (player.vy > 0) {
+        player.y = platform.y - player.h;
+        player.vy = 0;
+        player.onGround = true;
+      } else if (player.vy < 0) {
+        player.y = platformBottom;
+        player.vy = 0;
+      }
     }
   }
 
-  // Hazard collisions.
-  for (const hazard of level.hazards) {
-    if (collide(player, hazard)) {
-      resetPlayer();
-      toast("Zap! Try that jump again.");
-      return;
+  if (player.y < 0) {
+    player.y = 0;
+    player.vy = Math.max(0, player.vy);
+  }
+
+  if (!Number.isFinite(player.y)) {
+    player.y = previousY;
+    player.vy = 0;
+  }
+}
+
+function checkHazardsAndGoal() {
+  const level = levels[currentLevel];
+
+  if (player.invulnerable <= 0) {
+    for (const hazard of level.hazards) {
+      if (rectanglesOverlap(player, hazard)) {
+        respawnPlayer("Zap! Try that jump again.");
+        return;
+      }
     }
   }
 
-  // Falling below the level.
   if (player.y > H + 100) {
-    resetPlayer();
-    toast("You fell! Try again.");
+    respawnPlayer("You fell! Try again.");
     return;
   }
 
-  // Goal collision.
   const goal = {
     x: level.goal.x,
     y: level.goal.y,
@@ -540,52 +993,14 @@ function movePlayer(dt) {
     h: 60
   };
 
-  if (collide(player, goal)) {
+  if (rectanglesOverlap(player, goal)) {
     finishLevel();
   }
 }
 
-function finishLevel() {
-  if (won) return;
-
-  won = true;
-
-  const seconds =
-    (performance.now() - levelStarted) / 1000;
-
-  bestTimes[currentLevel] = Math.min(
-    bestTimes[currentLevel] ?? Infinity,
-    seconds
-  );
-
-  progress.current_level = currentLevel + 1;
-
-  progress.unlocked_level = Math.max(
-    progress.unlocked_level,
-    Math.min(defaultLevels.length, currentLevel + 2)
-  );
-
-  progress.total_jumps = Math.max(
-    progress.total_jumps,
-    jumps
-  );
-
-  updateStats();
-
-  toast(
-    `Level complete! ${seconds.toFixed(1)} seconds. Press Next to continue.`
-  );
-
-  if (user) {
-    saveProgress().catch(error =>
-      setStatus("Save failed: " + error.message)
-    );
-  }
-}
-
-// ============================================================
-// GRAPHICS
-// ============================================================
+/* =========================
+   DRAWING
+   ========================= */
 
 function roundedRect(x, y, w, h, radius, color) {
   ctx.fillStyle = color;
@@ -595,7 +1010,6 @@ function roundedRect(x, y, w, h, radius, color) {
 }
 
 function drawCloud(x, y, color, scale = 1) {
-  ctx.save();
   ctx.fillStyle = color;
   ctx.beginPath();
 
@@ -624,76 +1038,98 @@ function drawCloud(x, y, color, scale = 1) {
   );
 
   ctx.fill();
-  ctx.restore();
 }
 
 function drawBackground() {
   const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, "#10182f");
-  sky.addColorStop(0.55, "#243e69");
-  sky.addColorStop(1, "#5879a8");
+
+  sky.addColorStop(0, "#111b39");
+  sky.addColorStop(0.55, "#283e6b");
+  sky.addColorStop(1, "#536e9a");
 
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
 
   // Stars.
-  ctx.fillStyle = "#ffffff99";
+  for (let i = 0; i < 70; i++) {
+    const x = (i * 137 + 27) % W;
+    const y = (i * 61 + 19) % 350;
+    const pulse =
+      0.45 + 0.35 * Math.sin(animationTime * 2 + i);
 
-  for (let i = 0; i < 65; i++) {
-    const x = (i * 137 + 31) % W;
-    const y = (i * 71 + 17) % 300;
-    const size = i % 4 === 0 ? 2 : 1;
-
-    ctx.fillRect(x, y, size, size);
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(x, y, 2, 2);
   }
 
-  // Distant decorative clouds.
-  ctx.globalAlpha = 0.18;
+  ctx.globalAlpha = 1;
 
+  // Decorative clouds.
   for (let i = 0; i < 9; i++) {
-    drawCloud(
-      (i * 137 + 20) % W,
-      45 + (i % 4) * 55,
-      "#d8e7ff",
-      1.15
-    );
+    const x =
+      (i * 151 + animationTime * (8 + i % 3)) %
+      (W + 100) - 50;
+
+    const y = 45 + (i % 4) * 62;
+
+    ctx.globalAlpha = 0.12;
+    drawCloud(x, y, "#e1eaff", 1.2);
   }
 
   ctx.globalAlpha = 1;
 }
 
-function drawPlatforms(level) {
-  for (const p of level.platforms) {
+function drawPlatforms() {
+  const level = levels[currentLevel];
+
+  for (const platform of level.platforms) {
     // Shadow.
     roundedRect(
-      p.x + 3, p.y + 5, p.w, p.h, 5,
-      "#10172b66"
+      platform.x + 3,
+      platform.y + 5,
+      platform.w,
+      platform.h,
+      5,
+      "#10142677"
     );
 
-    // Platform body.
+    // Main platform.
     roundedRect(
-      p.x, p.y, p.w, p.h, 5,
-      "#263958"
+      platform.x,
+      platform.y,
+      platform.w,
+      platform.h,
+      5,
+      "#26395e"
     );
 
-    // Bright top edge.
-    roundedRect(
-      p.x, p.y, p.w, Math.min(5, p.h), 3,
-      "#8ce9f1"
+    // Glowing top edge.
+    ctx.fillStyle = "#74f0e5";
+    ctx.fillRect(
+      platform.x + 3,
+      platform.y,
+      Math.max(0, platform.w - 6),
+      3
     );
 
-    // Small decorative marks.
-    ctx.fillStyle = "#6684aa";
+    // Platform details.
+    ctx.fillStyle = "#5877a9";
 
-    for (let x = p.x + 12; x < p.x + p.w - 8; x += 24) {
-      ctx.fillRect(x, p.y + Math.min(9, p.h - 3), 3, 3);
+    for (
+      let x = platform.x + 12;
+      x < platform.x + platform.w - 8;
+      x += 24
+    ) {
+      ctx.fillRect(x, platform.y + 8, 3, 3);
     }
   }
 }
 
-function drawHazards(level) {
+function drawHazards() {
+  const level = levels[currentLevel];
+
   for (const hazard of level.hazards) {
-    ctx.fillStyle = "#ff527b";
+    ctx.fillStyle = "#ff587e";
     ctx.beginPath();
 
     for (
@@ -707,36 +1143,76 @@ function drawHazards(level) {
     }
 
     ctx.fill();
+
+    ctx.fillStyle = "#ff9caf";
+    ctx.fillRect(
+      hazard.x,
+      hazard.y + hazard.h - 2,
+      hazard.w,
+      2
+    );
   }
 }
 
-function drawGoal(level) {
-  const x = level.goal.x;
-  const y = level.goal.y;
+function drawGoal() {
+  const goal = levels[currentLevel].goal;
 
   ctx.save();
-  ctx.shadowColor = "#74f0e5";
-  ctx.shadowBlur = 18;
+
+  ctx.globalAlpha =
+    0.4 + 0.2 * Math.sin(animationTime * 5);
 
   ctx.fillStyle = "#74f0e5";
-  ctx.fillRect(x + 12, y, 5, 60);
+  ctx.fillRect(
+    goal.x + 7,
+    goal.y - 4,
+    18,
+    68
+  );
+
+  ctx.restore();
+
+  ctx.fillStyle = "#74f0e5";
+  ctx.fillRect(goal.x + 12, goal.y, 5, 60);
 
   ctx.fillStyle = "#ffe67d";
   ctx.beginPath();
-  ctx.moveTo(x + 17, y);
-  ctx.lineTo(x + 48, y + 12);
-  ctx.lineTo(x + 17, y + 25);
+  ctx.moveTo(goal.x + 17, goal.y);
+  ctx.lineTo(goal.x + 48, goal.y + 12);
+  ctx.lineTo(goal.x + 17, goal.y + 25);
   ctx.closePath();
   ctx.fill();
-
-  ctx.restore();
 }
 
 function drawPlayer() {
-  ctx.save();
+  if (
+    player.invulnerable > 0 &&
+    Math.floor(animationTime * 18) % 2 === 0
+  ) {
+    return;
+  }
 
-  ctx.shadowColor = "#9db5ff";
-  ctx.shadowBlur = 12;
+  if (player.gliding) {
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = "#74f0e5";
+    ctx.lineWidth = 3;
+
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(
+        player.x + 12 - i * 7,
+        player.y + 15 + i * 7
+      );
+      ctx.lineTo(
+        player.x - 8 - i * 7,
+        player.y + 20 + i * 7
+      );
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
 
   drawCloud(
     player.x,
@@ -745,14 +1221,26 @@ function drawPlayer() {
     0.8
   );
 
-  ctx.shadowBlur = 0;
-
   // Eyes.
   ctx.fillStyle = "#18233f";
-  ctx.fillRect(player.x + 16, player.y + 13, 3, 4);
-  ctx.fillRect(player.x + 26, player.y + 13, 3, 4);
 
-  // Lightning symbol.
+  const eyeOffset = player.facing < 0 ? -2 : 0;
+
+  ctx.fillRect(
+    player.x + 16 + eyeOffset,
+    player.y + 13,
+    3,
+    4
+  );
+
+  ctx.fillRect(
+    player.x + 26 + eyeOffset,
+    player.y + 13,
+    3,
+    4
+  );
+
+  // Lightning bolt.
   ctx.fillStyle = "#ffe66d";
   ctx.beginPath();
   ctx.moveTo(player.x + 20, player.y + 18);
@@ -763,15 +1251,13 @@ function drawPlayer() {
   ctx.lineTo(player.x + 23, player.y + 21);
   ctx.closePath();
   ctx.fill();
-
-  ctx.restore();
 }
 
 function drawRemotePlayers() {
   const now = Date.now();
 
   for (const [id, remote] of Object.entries(remotes)) {
-    if (now - remote.time > 5000) {
+    if (now - remote.time > 6000) {
       delete remotes[id];
       continue;
     }
@@ -790,9 +1276,9 @@ function drawRemotePlayers() {
     ctx.textAlign = "center";
 
     ctx.fillText(
-      remote.name || "Cloud player",
-      remote.x + 22,
-      remote.y - 4
+      (remote.name || "Cloud player").slice(0, 14),
+      remote.x + 17,
+      remote.y - 5
     );
 
     ctx.textAlign = "left";
@@ -801,7 +1287,8 @@ function drawRemotePlayers() {
 
 function drawBuilderGrid() {
   ctx.save();
-  ctx.strokeStyle = "#ffffff26";
+
+  ctx.strokeStyle = "#ffffff22";
   ctx.lineWidth = 1;
 
   for (let x = 0; x < W; x += TILE) {
@@ -818,17 +1305,53 @@ function drawBuilderGrid() {
     ctx.stroke();
   }
 
+  // Preview the builder's start and goal.
+  drawCloud(
+    builder.start.x,
+    builder.start.y,
+    "#74f0e5",
+    0.8
+  );
+
+  ctx.fillStyle = "#ffe67d";
+  ctx.fillRect(
+    builder.goal.x + 12,
+    builder.goal.y,
+    5,
+    60
+  );
+
   ctx.restore();
+}
+
+function drawWinOverlay() {
+  if (!won) return;
+
+  ctx.fillStyle = "#101426cc";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#74f0e5";
+  ctx.font = "bold 38px monospace";
+  ctx.fillText("LEVEL COMPLETE!", W / 2, H / 2);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "18px monospace";
+  ctx.fillText(
+    "Press Next to continue",
+    W / 2,
+    H / 2 + 36
+  );
+
+  ctx.textAlign = "left";
 }
 
 function draw() {
   drawBackground();
-
-  const level = levels[currentLevel];
-
-  drawPlatforms(level);
-  drawHazards(level);
-  drawGoal(level);
+  drawPlatforms();
+  drawHazards();
+  drawGoal();
   drawRemotePlayers();
   drawPlayer();
 
@@ -836,38 +1359,21 @@ function draw() {
     drawBuilderGrid();
   }
 
-  if (won) {
-    ctx.fillStyle = "#101426cc";
-    ctx.fillRect(0, 0, W, H);
-
-    ctx.fillStyle = "#74f0e5";
-    ctx.font = "bold 38px monospace";
-    ctx.textAlign = "center";
-    ctx.fillText("LEVEL COMPLETE!", W / 2, H / 2);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "18px monospace";
-    ctx.fillText(
-      "Press Next to continue",
-      W / 2,
-      H / 2 + 35
-    );
-
-    ctx.textAlign = "left";
-  }
+  drawWinOverlay();
 }
 
-// ============================================================
-// GAME LOOP AND INPUT
-// ============================================================
+/* =========================
+   MAIN GAME LOOP
+   ========================= */
 
 function frame(now) {
   const dt = Math.min(
-    Math.max((now - previousTime) / 1000, 0),
-    0.035
+    (now - previousTime) / 1000,
+    0.025
   );
 
   previousTime = now;
+  animationTime += dt;
 
   movePlayer(dt);
   draw();
@@ -895,12 +1401,21 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+/* =========================
+   KEYBOARD AND TOUCH INPUT
+   ========================= */
+
 window.addEventListener("keydown", event => {
   const key = event.key.length === 1
     ? event.key.toLowerCase()
     : event.key;
 
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", " "].includes(key)) {
+  if ([
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    " "
+  ].includes(key)) {
     event.preventDefault();
   }
 
@@ -908,6 +1423,10 @@ window.addEventListener("keydown", event => {
 
   if (key === "r") {
     resetPlayer();
+  }
+
+  if (key === "Escape" && mode !== "play") {
+    setMode("play");
   }
 });
 
@@ -921,14 +1440,15 @@ window.addEventListener("keyup", event => {
 
 window.addEventListener("blur", () => {
   keys.clear();
-  held.left = false;
-  held.right = false;
-  held.jump = false;
-  player.jumpWasHeld = false;
+
+  Object.keys(held).forEach(key => {
+    held[key] = false;
+  });
 });
 
 function bindHold(id, property) {
   const button = $(id);
+  if (!button) return;
 
   const down = event => {
     event.preventDefault();
@@ -944,20 +1464,22 @@ function bindHold(id, property) {
   button.addEventListener("pointerup", up);
   button.addEventListener("pointercancel", up);
   button.addEventListener("pointerleave", up);
-  button.addEventListener("contextmenu", event => {
-    event.preventDefault();
-  });
+  button.addEventListener("lostpointercapture", up);
 }
 
 bindHold("left-button", "left");
 bindHold("right-button", "right");
 bindHold("jump-button", "jump");
 
-$("restart-button").addEventListener("click", resetPlayer);
+$("restart-button").addEventListener(
+  "click",
+  resetPlayer
+);
 
-$("previous-button").addEventListener("click", () => {
-  goToLevel(currentLevel - 1);
-});
+$("previous-button").addEventListener(
+  "click",
+  () => goToLevel(currentLevel - 1)
+);
 
 $("next-button").addEventListener("click", () => {
   if (currentLevel < levels.length - 1) {
@@ -967,111 +1489,266 @@ $("next-button").addEventListener("click", () => {
   }
 });
 
-$("fullscreen-button").addEventListener("click", async () => {
-  try {
-    if (!document.fullscreenElement) {
-      await $("canvas-wrap").requestFullscreen();
-    } else {
-      await document.exitFullscreen();
+$("fullscreen-button").addEventListener(
+  "click",
+  async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await $("canvas-wrap").requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch {
+      toast("Fullscreen isn't available here.");
     }
-  } catch {
-    toast("Fullscreen is not available in this browser.");
   }
+);
+
+/* =========================
+   NAVIGATION
+   ========================= */
+
+$("play-tab").addEventListener("click", () => {
+  setMode("play");
 });
 
-$("play-tab").addEventListener("click", () => setMode("play"));
-$("builder-tab").addEventListener("click", () => setMode("builder"));
+$("builder-tab").addEventListener("click", () => {
+  setMode("builder");
+});
 
 $("community-tab").addEventListener("click", () => {
   setMode("community");
-  loadCommunityLevels();
 });
 
-// ============================================================
-// LEVEL BUILDER
-// ============================================================
+/* =========================
+   LEVEL EDITOR SCREEN
+   ========================= */
 
-function setTool(tool) {
-  builderTool = tool;
+function buildEditorScreen() {
+  const screen = document.createElement("section");
 
-  ["platform", "hazard", "erase", "start", "goal"].forEach(name => {
-    $("tool-" + name).classList.toggle(
-      "active",
-      name === tool
-    );
+  screen.id = "editor-screen";
+  screen.className = "game-screen";
+
+  screen.innerHTML = `
+    <h1 class="game-screen-heading">
+      🧱 Level Editor
+    </h1>
+
+    <p class="game-screen-description">
+      Design your own course. Select a tool, then click
+      the game canvas to place objects on the grid.
+    </p>
+
+    <div class="editor-help">
+      Platform: create a platform.
+      Hazard: place a hazard.
+      Erase: remove an object.
+      Start: choose the spawn point.
+      Goal: choose the finish.
+    </div>
+
+    <div class="game-screen-controls">
+      <input id="editor-title"
+        maxlength="50"
+        value="My Cloud Course"
+        placeholder="Level name">
+
+      <button id="editor-tool-platform">Platform</button>
+      <button id="editor-tool-hazard">Hazard</button>
+      <button id="editor-tool-erase">Erase</button>
+      <button id="editor-tool-start">Start</button>
+      <button id="editor-tool-goal">Goal</button>
+    </div>
+
+    <div class="game-screen-controls">
+      <button id="editor-clear">Clear all</button>
+      <button id="editor-test" class="primary">Test level</button>
+      <button id="editor-save">Save locally</button>
+      <button id="editor-publish" class="primary">
+        Publish level
+      </button>
+    </div>
+
+    <p id="editor-status" class="game-screen-description">
+      Ready to build.
+    </p>
+
+    <div class="game-screen-controls">
+      <button id="editor-back">Back to game</button>
+    </div>
+  `;
+
+  $("extra-screen-host").appendChild(screen);
+
+  const toolButtons = {
+    "editor-tool-platform": "platform",
+    "editor-tool-hazard": "hazard",
+    "editor-tool-erase": "erase",
+    "editor-tool-start": "start",
+    "editor-tool-goal": "goal"
+  };
+
+  for (const [id, tool] of Object.entries(toolButtons)) {
+    $(id).addEventListener("click", () => {
+      builderTool = tool;
+
+      for (const buttonId of Object.keys(toolButtons)) {
+        $(buttonId).classList.toggle(
+          "active",
+          buttonId === id
+        );
+      }
+
+      $("editor-status").textContent =
+        `Selected tool: ${tool}`;
+    });
+  }
+
+  $("editor-title").addEventListener("input", () => {
+    builder.name =
+      $("editor-title").value.trim() || "My Cloud Course";
+    editorDirty = true;
+  });
+
+  $("editor-clear").addEventListener("click", () => {
+    builder = {
+      name: $("editor-title").value.trim() || "My Cloud Course",
+      platforms: [],
+      hazards: [],
+      start: { x: 40, y: 420 },
+      goal: { x: 850, y: 390 }
+    };
+
+    editorDirty = true;
+    refreshEditorPreview();
+
+    $("editor-status").textContent = "Editor cleared.";
+  });
+
+  $("editor-test").addEventListener("click", () => {
+    const level = captureBuilder();
+
+    if (!validCommunityLevel(level) ||
+        level.platforms.length === 0) {
+      $("editor-status").textContent =
+        "Add a valid platform before testing.";
+      return;
+    }
+
+    levels.push(copyLevel(level));
+    currentLevel = levels.length - 1;
+    checkpoint = null;
+
+    updateStats();
+    resetPlayer();
+    setMode("play");
+
+    toast("Testing your custom course!");
+  });
+
+  $("editor-save").addEventListener("click", () => {
+    try {
+      localStorage.setItem(
+        "thundercloud-custom-level",
+        JSON.stringify(captureBuilder())
+      );
+
+      $("editor-status").textContent =
+        "Level saved in this browser.";
+    } catch {
+      $("editor-status").textContent =
+        "Couldn't save to browser storage.";
+    }
+  });
+
+  $("editor-publish").addEventListener(
+    "click",
+    publishLevel
+  );
+
+  $("editor-back").addEventListener("click", () => {
+    setMode("play");
   });
 }
 
-["platform", "hazard", "erase", "start", "goal"].forEach(tool => {
-  $("tool-" + tool).addEventListener("click", () => setTool(tool));
-});
+function captureBuilder() {
+  return {
+    name: (
+      builder.name ||
+      $("editor-title")?.value ||
+      "My Cloud Course"
+    ).trim().slice(0, 50) || "My Cloud Course",
 
-function freshBuilder() {
-  builder = {
-    platforms: [],
-    hazards: [],
-    start: { x: 40, y: 420 },
-    goal: { x: 850, y: 390 }
+    start: { ...builder.start },
+    goal: { ...builder.goal },
+
+    platforms: builder.platforms.map(
+      platform => ({ ...platform })
+    ),
+
+    hazards: builder.hazards.map(
+      hazard => ({ ...hazard })
+    )
   };
 }
 
-$("clear-builder").addEventListener("click", () => {
-  freshBuilder();
+function refreshEditorPreview() {
+  if ($("editor-title")) {
+    $("editor-title").value = builder.name;
+  }
 
-  levels[currentLevel] = {
-    ...copyLevel(levels[currentLevel]),
-    platforms: [],
-    hazards: []
-  };
-
-  toast("Builder cleared.");
-});
+  if ($("editor-status")) {
+    $("editor-status").textContent =
+      `${builder.platforms.length} platforms · ` +
+      `${builder.hazards.length} hazards`;
+  }
+}
 
 canvas.addEventListener("click", event => {
   if (mode !== "builder") return;
 
   const rect = canvas.getBoundingClientRect();
 
-  const x = Math.floor(
-    ((event.clientX - rect.left) / rect.width * W) / TILE
-  ) * TILE;
+  const x = clamp(
+    Math.floor(
+      ((event.clientX - rect.left) / rect.width * W) / TILE
+    ) * TILE,
+    0,
+    W - TILE
+  );
 
-  const y = Math.floor(
-    ((event.clientY - rect.top) / rect.height * H) / TILE
-  ) * TILE;
+  const y = clamp(
+    Math.floor(
+      ((event.clientY - rect.top) / rect.height * H) / TILE
+    ) * TILE,
+    0,
+    H - TILE
+  );
 
   if (builderTool === "start") {
     builder.start = {
-      x: Math.max(0, Math.min(W - 40, x)),
-      y: Math.max(0, Math.min(H - 40, y))
+      x: clamp(x, 0, W - 40),
+      y: clamp(y, 0, H - 40)
     };
   } else if (builderTool === "goal") {
     builder.goal = {
-      x: Math.max(0, Math.min(W - 50, x)),
-      y: Math.max(0, Math.min(H - 60, y))
+      x: clamp(x, 0, W - 50),
+      y: clamp(y, 0, H - 60)
     };
   } else if (builderTool === "erase") {
-    builder.platforms = builder.platforms.filter(item =>
-      !(x >= item.x && x < item.x + item.w &&
-        y >= item.y - 8 && y < item.y + item.h + 8)
+    builder.platforms = builder.platforms.filter(
+      item => !pointInsideObject(x, y, item)
     );
 
-    builder.hazards = builder.hazards.filter(item =>
-      !(x >= item.x && x < item.x + item.w &&
-        y >= item.y - 8 && y < item.y + item.h + 8)
+    builder.hazards = builder.hazards.filter(
+      item => !pointInsideObject(x, y, item)
     );
   } else if (builderTool === "platform") {
-    const hit = builder.platforms.findIndex(item =>
-      x >= item.x && x < item.x + item.w &&
-      y >= item.y - 8 && y < item.y + item.h + 8
-    );
-
-    if (hit >= 0) {
-      builder.platforms.splice(hit, 1);
-    } else if (builder.platforms.length < 150) {
+    if (builder.platforms.length < 150) {
       builder.platforms.push({
-        x: Math.max(0, Math.min(W - 120, x)),
-        y: Math.max(0, Math.min(H - 18, y)),
+        x,
+        y,
         w: 120,
         h: 18
       });
@@ -1079,67 +1756,264 @@ canvas.addEventListener("click", event => {
   } else if (builderTool === "hazard") {
     if (builder.hazards.length < 100) {
       builder.hazards.push({
-        x: Math.max(0, Math.min(W - 80, x)),
-        y: Math.max(0, Math.min(H - 15, y + 20)),
+        x,
+        y: Math.min(H - 15, y + 20),
         w: 80,
         h: 15
       });
     }
   }
 
-  levels[currentLevel] = captureBuilder();
-  player.x = builder.start.x;
-  player.y = builder.start.y;
-  player.vx = 0;
-  player.vy = 0;
+  builder.name =
+    $("editor-title")?.value.trim() ||
+    "My Cloud Course";
+
+  editorDirty = true;
+  refreshEditorPreview();
 });
 
-function captureBuilder() {
-  return {
-    name: $("level-title").value.trim().slice(0, 50) ||
-      "My Cloud Course",
-
-    start: { ...builder.start },
-    goal: { ...builder.goal },
-
-    platforms: builder.platforms.map(p => ({ ...p })),
-    hazards: builder.hazards.map(h => ({ ...h }))
-  };
+function pointInsideObject(x, y, object) {
+  return (
+    x >= object.x &&
+    x < object.x + object.w &&
+    y >= object.y - 8 &&
+    y < object.y + object.h + 8
+  );
 }
 
-$("test-builder").addEventListener("click", () => {
-  const level = captureBuilder();
+/* =========================
+   COMMUNITY LEVELS SCREEN
+   ========================= */
 
-  if (!level.platforms.length) {
-    toast("Add at least one platform first.");
+function buildCommunityScreen() {
+  const screen = document.createElement("section");
+
+  screen.id = "community-screen";
+  screen.className = "game-screen";
+
+  screen.innerHTML = `
+    <h1 class="game-screen-heading">
+      🌍 Community Levels
+    </h1>
+
+    <p class="game-screen-description">
+      Browse levels published by players. The list is
+      retrieved from the shared online database.
+    </p>
+
+    <div class="game-screen-controls">
+      <input id="community-search"
+        placeholder="Search level names...">
+
+      <select id="community-sort">
+        <option value="newest">Newest first</option>
+        <option value="alphabetical">Alphabetical</option>
+      </select>
+
+      <button id="community-refresh">Refresh</button>
+      <button id="community-create">Create a level</button>
+    </div>
+
+    <p id="community-status"
+      class="game-screen-description">
+      Loading community levels...
+    </p>
+
+    <div id="community-grid" class="community-grid"></div>
+
+    <div class="game-pagination">
+      <button id="community-prev">Previous</button>
+      <span id="community-page-label">Page 1</span>
+      <button id="community-next">Next</button>
+    </div>
+
+    <div class="game-screen-controls">
+      <button id="community-back">Back to game</button>
+    </div>
+  `;
+
+  $("extra-screen-host").appendChild(screen);
+
+  $("community-search").addEventListener("input", () => {
+    communitySearch =
+      $("community-search").value.trim().toLowerCase();
+
+    communityPage = 0;
+    renderCommunityLevels();
+  });
+
+  $("community-sort").addEventListener("change", () => {
+    communitySort = $("community-sort").value;
+    renderCommunityLevels();
+  });
+
+  $("community-refresh").addEventListener(
+    "click",
+    loadCommunityLevels
+  );
+
+  $("community-create").addEventListener("click", () => {
+    setMode("builder");
+  });
+
+  $("community-back").addEventListener("click", () => {
+    setMode("play");
+  });
+
+  $("community-prev").addEventListener("click", () => {
+    communityPage = Math.max(0, communityPage - 1);
+    renderCommunityLevels();
+  });
+
+  $("community-next").addEventListener("click", () => {
+    communityPage++;
+    renderCommunityLevels();
+  });
+}
+
+async function loadCommunityLevels() {
+  const status = $("community-status");
+  const grid = $("community-grid");
+
+  if (!status || !grid) return;
+
+  status.textContent = "Loading published levels...";
+  grid.replaceChildren();
+
+  const { data, error } = await supabase
+    .from("custom_levels")
+    .select("id,title,level_data,created_at")
+    .eq("is_public", true)
+    .order("created_at", { ascending: false })
+    .limit(1000);
+
+  if (error) {
+    status.textContent =
+      "Couldn't load online levels: " + error.message;
     return;
   }
 
-  levels[currentLevel] = level;
+  communityLevels = (data || []).filter(item =>
+    validCommunityLevel(item.level_data)
+  );
+
+  communityPage = 0;
+  renderCommunityLevels();
+}
+
+function renderCommunityLevels() {
+  const grid = $("community-grid");
+  const status = $("community-status");
+
+  if (!grid || !status) return;
+
+  grid.replaceChildren();
+
+  let results = communityLevels.filter(item =>
+    String(item.title || "")
+      .toLowerCase()
+      .includes(communitySearch)
+  );
+
+  if (communitySort === "alphabetical") {
+    results.sort((a, b) =>
+      String(a.title).localeCompare(String(b.title))
+    );
+  } else {
+    results.sort((a, b) =>
+      new Date(b.created_at) - new Date(a.created_at)
+    );
+  }
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(results.length / communityPageSize)
+  );
+
+  communityPage = clamp(
+    communityPage,
+    0,
+    totalPages - 1
+  );
+
+  const start = communityPage * communityPageSize;
+
+  const pageResults = results.slice(
+    start,
+    start + communityPageSize
+  );
+
+  status.textContent =
+    `${results.length} matching published level(s).`;
+
+  $("community-page-label").textContent =
+    `Page ${communityPage + 1} of ${totalPages}`;
+
+  $("community-prev").disabled = communityPage === 0;
+
+  $("community-next").disabled =
+    communityPage >= totalPages - 1;
+
+  if (!pageResults.length) {
+    grid.textContent =
+      "No levels found. Try another search or publish one!";
+    return;
+  }
+
+  for (const item of pageResults) {
+    const button = document.createElement("button");
+
+    button.className = "community-card";
+
+    const title = document.createElement("strong");
+    title.textContent = item.title || "Untitled level";
+
+    const description = document.createElement("small");
+    description.textContent =
+      `${item.level_data.platforms.length} platforms · ` +
+      `${item.level_data.hazards.length} hazards`;
+
+    const playText = document.createElement("div");
+    playText.textContent = "▶ Play level";
+    playText.style.marginTop = "12px";
+    playText.style.color = "#74f0e5";
+
+    button.append(title, description, playText);
+
+    button.addEventListener("click", () => {
+      loadCommunityLevel(item);
+    });
+
+    grid.appendChild(button);
+  }
+}
+
+function loadCommunityLevel(item) {
+  const level = item.level_data;
+
+  if (!validCommunityLevel(level)) {
+    toast("This community level has invalid data.");
+    return;
+  }
+
+  levels.push({
+    ...copyLevel(level),
+    name: String(item.title || "Community level").slice(0, 50)
+  });
+
+  currentLevel = levels.length - 1;
+  checkpoint = null;
+
+  updateStats();
   resetPlayer();
   setMode("play");
-  updateStats();
-  toast("Testing your custom level!");
-});
 
-$("save-local").addEventListener("click", () => {
-  try {
-    localStorage.setItem(
-      "thundercloud-custom-level",
-      JSON.stringify(captureBuilder())
-    );
+  toast("Loaded: " + levels[currentLevel].name);
+}
 
-    toast("Level saved in this browser.");
-  } catch {
-    toast("Browser storage is unavailable.");
-  }
-});
-
-$("publish-level").addEventListener("click", publishLevel);
-
-// ============================================================
-// SUPABASE AUTHENTICATION AND SAVED PROGRESS
-// ============================================================
+/* =========================
+   SUPABASE ACCOUNT SYSTEM
+   ========================= */
 
 function showAccount(signedInUser) {
   user = signedInUser || null;
@@ -1157,43 +2031,57 @@ async function loadProgress() {
 
   const { data, error } = await supabase
     .from("parkour_progress")
-    .select("current_level, unlocked_level, total_jumps")
+    .select("current_level,unlocked_level,total_jumps")
     .eq("user_id", user.id)
     .maybeSingle();
 
   if (error) throw error;
 
   if (!data) {
-    setStatus("No cloud save found yet. Play a level, then save.");
+    setStatus("No cloud save found yet. Play, then save.");
     return;
   }
 
   progress = {
-    current_level: Math.max(1, Number(data.current_level) || 1),
-    unlocked_level: Math.max(1, Number(data.unlocked_level) || 1),
-    total_jumps: Math.max(0, Number(data.total_jumps) || 0)
+    current_level: Math.max(
+      1,
+      Number(data.current_level) || 1
+    ),
+    unlocked_level: Math.max(
+      1,
+      Number(data.unlocked_level) || 1
+    ),
+    total_jumps: Math.max(
+      0,
+      Number(data.total_jumps) || 0
+    )
   };
 
-  currentLevel = Math.min(
-    defaultLevels.length - 1,
-    progress.current_level - 1
+  currentLevel = clamp(
+    progress.current_level - 1,
+    0,
+    defaultLevels.length - 1
   );
 
   jumps = progress.total_jumps;
 
   resetPlayer();
   updateStats();
+
   setStatus("Cloud progress loaded.");
 }
 
 async function saveProgress() {
-  if (!user) throw new Error("Log in first.");
+  if (!user) {
+    throw new Error("Log in first.");
+  }
 
   const payload = {
-    current_level: Math.max(1, currentLevel + 1),
-    unlocked_level: Math.max(
+    current_level: currentLevel + 1,
+    unlocked_level: clamp(
+      progress.unlocked_level,
       1,
-      Math.min(defaultLevels.length, progress.unlocked_level)
+      defaultLevels.length
     ),
     total_jumps: Math.max(0, jumps)
   };
@@ -1209,11 +2097,12 @@ async function saveProgress() {
 
   if (!data) {
     throw new Error(
-      "No progress row was updated. Check your Supabase table and policies."
+      "No save row was updated. Check your database policies."
     );
   }
 
   progress = { ...progress, ...payload };
+
   setStatus("Progress saved to Supabase!");
 }
 
@@ -1222,11 +2111,13 @@ $("signup-button").addEventListener("click", async () => {
   const password = $("password").value;
 
   if (!email || password.length < 6) {
-    setStatus("Enter an email and a password with at least 6 characters.");
+    setStatus(
+      "Enter an email and password with at least 6 characters."
+    );
     return;
   }
 
-  setStatus("Creating account…");
+  setStatus("Creating account...");
 
   const { error } = await supabase.auth.signUp({
     email,
@@ -1236,12 +2127,12 @@ $("signup-button").addEventListener("click", async () => {
   setStatus(
     error
       ? error.message
-      : "Account created. Check your email if confirmation is required."
+      : "Account created. Check email if confirmation is required."
   );
 });
 
 $("login-button").addEventListener("click", async () => {
-  setStatus("Logging in…");
+  setStatus("Logging in...");
 
   const { error } = await supabase.auth.signInWithPassword({
     email: $("email").value.trim(),
@@ -1274,16 +2165,54 @@ supabase.auth.onAuthStateChange((event, session) => {
 
   if (session?.user) {
     setTimeout(() => {
-      loadProgress().catch(error =>
-        setStatus("Load failed: " + error.message)
-      );
+      loadProgress().catch(error => {
+        setStatus("Load failed: " + error.message);
+      });
     }, 0);
   }
 });
 
-// ============================================================
-// MULTIPLAYER ROOM
-// ============================================================
+/* =========================
+   PUBLISH COMMUNITY LEVELS
+   ========================= */
+
+async function publishLevel() {
+  if (!user) {
+    setStatus("Log in to publish a level.");
+    return;
+  }
+
+  const level = captureBuilder();
+
+  if (!validCommunityLevel(level)) {
+    setStatus("The level contains invalid objects.");
+    return;
+  }
+
+  setStatus("Publishing level...");
+
+  const { error } = await supabase
+    .from("custom_levels")
+    .insert({
+      author_id: user.id,
+      title: level.name,
+      level_data: level,
+      is_public: true
+    });
+
+  if (error) {
+    setStatus("Publish failed: " + error.message);
+    return;
+  }
+
+  setStatus("Level published!");
+
+  await loadCommunityLevels();
+}
+
+/* =========================
+   MULTIPLAYER ROOM
+   ========================= */
 
 async function joinRoom() {
   const requested = $("room-name").value
@@ -1303,9 +2232,12 @@ async function joinRoom() {
   }
 
   roomName = requested;
-  remotes = {};
 
-  setRoomStatus("Joining " + roomName + "…");
+  for (const id of Object.keys(remotes)) {
+    delete remotes[id];
+  }
+
+  setRoomStatus("Joining " + roomName + "...");
 
   roomChannel = supabase.channel(
     "parkour-room-" + roomName,
@@ -1332,8 +2264,8 @@ async function joinRoom() {
       }
 
       remotes[payload.id] = {
-        x: Math.max(0, Math.min(W - 40, payload.x)),
-        y: Math.max(0, Math.min(H - 40, payload.y)),
+        x: clamp(payload.x, 0, W - 40),
+        y: clamp(payload.y, 0, H - 40),
         name: String(payload.name || "Cloud").slice(0, 16),
         color: /^#[0-9a-f]{6}$/i.test(payload.color)
           ? payload.color
@@ -1346,14 +2278,15 @@ async function joinRoom() {
   roomChannel.subscribe(status => {
     if (status === "SUBSCRIBED") {
       setRoomStatus(
-        "Connected to " + roomName + ". Share this room name with friends."
+        "Connected to " + roomName +
+        ". Share this room name with friends."
       );
     } else if (
       status === "CHANNEL_ERROR" ||
       status === "TIMED_OUT"
     ) {
       setRoomStatus(
-        "Room connection failed. Check Supabase Realtime settings."
+        "Room connection failed. Check Supabase Realtime."
       );
     } else if (status === "CLOSED") {
       setRoomStatus("Room disconnected.");
@@ -1363,190 +2296,71 @@ async function joinRoom() {
 
 $("join-room").addEventListener("click", joinRoom);
 
-// ============================================================
-// COMMUNITY LEVELS
-// ============================================================
+/* =========================
+   RESTORE LOCAL DRAFT
+   ========================= */
 
-function validCommunityLevel(level) {
-  if (
-    !level ||
-    !Array.isArray(level.platforms) ||
-    !Array.isArray(level.hazards)
-  ) {
-    return false;
-  }
+function restoreLocalDraft() {
+  try {
+    const draft = JSON.parse(
+      localStorage.getItem("thundercloud-custom-level") || "null"
+    );
 
-  if (
-    level.platforms.length > 150 ||
-    level.hazards.length > 100
-  ) {
-    return false;
-  }
-
-  const validRect = rect =>
-    rect &&
-    [rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) &&
-    rect.x >= 0 &&
-    rect.y >= 0 &&
-    rect.x < W &&
-    rect.y < H &&
-    rect.w > 0 &&
-    rect.h > 0 &&
-    rect.w <= W &&
-    rect.h <= H;
-
-  return (
-    validRect({ ...level.start, w: 1, h: 1 }) &&
-    validRect({ ...level.goal, w: 1, h: 1 }) &&
-    level.platforms.every(validRect) &&
-    level.hazards.every(validRect)
-  );
-}
-
-async function publishLevel() {
-  if (!user) {
-    setStatus("Log in to publish a community level.");
-    return;
-  }
-
-  const level = captureBuilder();
-
-  if (!validCommunityLevel(level)) {
-    setStatus("This level has invalid or too many objects.");
-    return;
-  }
-
-  setStatus("Publishing level…");
-
-  const { error } = await supabase
-    .from("custom_levels")
-    .insert({
-      author_id: user.id,
-      title: level.name,
-      level_data: level,
-      is_public: true
-    });
-
-  setStatus(
-    error
-      ? "Publish failed: " + error.message
-      : "Level published!"
-  );
-
-  if (!error) {
-    await loadCommunityLevels();
+    if (draft && validCommunityLevel(draft)) {
+      builder = {
+        name: draft.name || "My Cloud Course",
+        platforms: draft.platforms.map(p => ({ ...p })),
+        hazards: draft.hazards.map(h => ({ ...h })),
+        start: { ...draft.start },
+        goal: { ...draft.goal }
+      };
+    }
+  } catch {
+    // Ignore damaged local data.
   }
 }
 
-async function loadCommunityLevels() {
-  const list = $("community-list");
-  list.replaceChildren();
+/* =========================
+   INITIALIZATION
+   ========================= */
 
-  const { data, error } = await supabase
-    .from("custom_levels")
-    .select("id,title,level_data,created_at")
-    .eq("is_public", true)
-    .order("created_at", { ascending: false })
-    .limit(40);
+async function initializeGame() {
+  createAdditionalScreens();
+
+  restoreLocalDraft();
+
+  levels = defaultLevels.map(copyLevel);
+
+  resetPlayer();
+  updateStats();
+
+  const { data, error } = await supabase.auth.getSession();
 
   if (error) {
-    list.textContent = "Couldn't load levels: " + error.message;
-    return;
-  }
+    setStatus(error.message);
+  } else if (data.session?.user) {
+    showAccount(data.session.user);
 
-  if (!data?.length) {
-    list.textContent =
-      "No community levels yet. Sign in and publish one!";
-    return;
-  }
-
-  for (const item of data) {
-    const button = document.createElement("button");
-    button.className = "level-card";
-    button.textContent = item.title;
-
-    button.addEventListener("click", () => {
-      const level = item.level_data;
-
-      if (!validCommunityLevel(level)) {
-        toast("That community level has invalid data.");
-        return;
-      }
-
-      levels.push({
-        ...copyLevel(level),
-        name: item.title
-      });
-
-      currentLevel = levels.length - 1;
-      resetPlayer();
-      updateStats();
-      setMode("play");
-
-      toast("Loaded community level: " + item.title);
-    });
-
-    list.append(button);
-  }
-}
-
-$("refresh-community").addEventListener(
-  "click",
-  loadCommunityLevels
-);
-
-// ============================================================
-// STARTUP
-// ============================================================
-
-try {
-  const draft = JSON.parse(
-    localStorage.getItem("thundercloud-custom-level") || "null"
-  );
-
-  if (draft && validCommunityLevel(draft)) {
-    builder = {
-      platforms: draft.platforms.map(p => ({ ...p })),
-      hazards: draft.hazards.map(h => ({ ...h })),
-      start: { ...draft.start },
-      goal: { ...draft.goal }
-    };
-
-    $("level-title").value =
-      draft.name || "My Cloud Course";
-  }
-} catch {
-  // Ignore an invalid local draft.
-}
-
-levels = defaultLevels.map(copyLevel);
-
-resetPlayer();
-updateStats();
-
-requestAnimationFrame(frame);
-
-(async function initialize() {
-  try {
-    const { data, error } = await supabase.auth.getSession();
-
-    if (error) {
-      setStatus(error.message);
-    } else if (data.session?.user) {
-      showAccount(data.session.user);
-
-      try {
-        await loadProgress();
-      } catch (loadError) {
-        setStatus("Load failed: " + loadError.message);
-      }
-    } else {
-      showAccount(null);
-      setStatus("Ready! Sign in to save your progress.");
+    try {
+      await loadProgress();
+    } catch (loadError) {
+      setStatus("Load failed: " + loadError.message);
     }
-
-    await joinRoom();
-  } catch (error) {
-    setStatus("Startup error: " + error.message);
+  } else {
+    showAccount(null);
+    setStatus(
+      "Ready! Sign in to save progress online."
+    );
   }
-})();
+
+  refreshEditorPreview();
+  joinRoom();
+
+  previousTime = performance.now();
+  requestAnimationFrame(frame);
+}
+
+initializeGame().catch(error => {
+  console.error("Game initialization failed:", error);
+  setStatus("Game initialization failed: " + error.message);
+});
