@@ -14,3 +14,15 @@
   <script type="module" src="./parkour.js"></script>
 </body>
 </html>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+  const supabaseClient = supabase.createClient(
+    "https://qorfczqljrvxfouodhcp.supabase.co",
+    "sb_publishable_C4uGBFM5nmiGWOPanRqWvQ_SPbC0eRb"
+  );
+
+  console.log("Supabase client initialized!");
+</script>
+
